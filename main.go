@@ -3,7 +3,7 @@ Copyright © 2024 NAME HERE <EMAIL ADDRESS>
 */
 package main
 
-import "github.com/timescale/tslogrepl/cmd"
+import "github.com/timescale/pg-subscriber/cmd"
 
 func main() {
 	cmd.Execute()

@@ -6,24 +6,32 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/timescale/tslogrepl/internal/subscription"
+	"github.com/timescale/pg-subscriber/internal/subscription"
 )
 
 // subscriptionHelperCmd represents the subscriptionHelper command
 var subscriptionHelperCmd = &cobra.Command{
-	Use:   "subscription-helper",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Use:   "upstream",
+	Short: "Upstream subscription helper for TimescaleDB replication.",
+	Long: `TimescaleDB extension for PostgreSQL creates chunk tables dynamically
+	based on the data that is inserted into the hypertable. Since the upstream
+	logical replication doesn't replicate DDL changes, the chunks that are
+	created on the source need to be created on the target manually. This
+	utility helps in creating the missing chunks on the target.
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Additionally, the chunks that are created on the source also need to be
+	added to the publication so that the changes that are made to the chunk
+	tables are replicated to the target. This utility also helps in adding the
+	chunks to the publication.
+
+	Finally, the utility refreshes the subscription on the target so that the
+	changes that are made to the publication are replicated to the target.
+	`,
 	Run: func(cmd *cobra.Command, args []string) {
+		subscriptions, _ := cmd.Flags().GetStringArray("subscription")
 		subscription.Run(
 			cmd.Context(),
-			cmd.Flag("subscription").Value.String(),
-			cmd.Flag("publication").Value.String(),
+			subscriptions,
 			cmd.Flag("source").Value.String(),
 			cmd.Flag("target").Value.String())
 	},
@@ -45,8 +53,6 @@ func init() {
 	subscriptionHelperCmd.MarkFlagRequired("source")
 	subscriptionHelperCmd.Flags().StringP("target", "t", "", "Target PGURI")
 	subscriptionHelperCmd.MarkFlagRequired("target")
-	subscriptionHelperCmd.Flags().StringP("publication", "p", "", "Publication Name")
-	subscriptionHelperCmd.MarkFlagRequired("publication")
-	subscriptionHelperCmd.Flags().StringP("subscription", "u", "", "Subscription Name")
+	subscriptionHelperCmd.Flags().StringArrayP("subscription", "u", []string{}, "Subscription to refresh")
 	subscriptionHelperCmd.MarkFlagRequired("subscription")
 }

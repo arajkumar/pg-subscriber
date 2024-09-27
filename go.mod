@@ -1,4 +1,4 @@
-module github.com/timescale/tslogrepl
+module github.com/timescale/pg-subscriber
 
 go 1.20
 

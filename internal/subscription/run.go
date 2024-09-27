@@ -4,18 +4,23 @@ import (
 	"fmt"
 	"context"
 	"github.com/jackc/pgx/v5"
-	"github.com/timescale/tslogrepl/internal/timescale"
+	"github.com/timescale/pg-subscriber/internal/timescale"
 	"time"
 )
 
-func refreshSubscription(ctx context.Context, conn *pgx.Conn, subscriptionName string) error {
-	sql := fmt.Sprintf("ALTER SUBSCRIPTION %s REFRESH PUBLICATION",
-							pgx.Identifier{subscriptionName}.Sanitize())
-	_, err := conn.Exec(ctx, sql)
-	return err
+func refreshSubscription(ctx context.Context, conn *pgx.Conn, subscriptions []string) error {
+	for _, subscriptionName := range subscriptions {
+		sql := fmt.Sprintf("ALTER SUBSCRIPTION %s REFRESH PUBLICATION",
+								pgx.Identifier{subscriptionName}.Sanitize())
+		_, err := conn.Exec(ctx, sql)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func Run(ctx context.Context, subscriptionName string, publicationName string, sourcePGURI string, targetPGURI string) {
+func Run(ctx context.Context, subscriptions []string, sourcePGURI string, targetPGURI string) {
 	sourceConn, err := pgx.Connect(ctx, sourcePGURI)
 	if err != nil {
 		panic(err)
@@ -33,6 +38,9 @@ func Run(ctx context.Context, subscriptionName string, publicationName string, s
 			panic(err)
 		}
 
+		// TODO: Handle chunks which are automatically added to publication
+		// due to FOR ALL TABLES or FOR ALL TABLES IN SCHEMA clause in
+		// CREATE PUBLICATION statement.
 		for _, chunk := range chunks {
 			fmt.Println("Creating chunk on target: ", chunk)
 			err := chunk.Create(ctx, targetConn)
@@ -52,7 +60,7 @@ func Run(ctx context.Context, subscriptionName string, publicationName string, s
 		}
 
 		if len(chunks) > 0 {
-			err := refreshSubscription(ctx, targetConn, subscriptionName)
+			err := refreshSubscription(ctx, targetConn, subscriptions)
 			if err != nil {
 				fmt.Println("Error refreshing subscription: ", err)
 			}
