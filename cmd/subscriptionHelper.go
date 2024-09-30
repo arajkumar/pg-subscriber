@@ -29,9 +29,11 @@ var subscriptionHelperCmd = &cobra.Command{
 	`,
 	Run: func(cmd *cobra.Command, args []string) {
 		subscriptions, _ := cmd.Flags().GetStringArray("subscription")
+		publications, _ := cmd.Flags().GetStringArray("publication")
 		subscription.Run(
 			cmd.Context(),
 			subscriptions,
+			publications,
 			cmd.Flag("source").Value.String(),
 			cmd.Flag("target").Value.String())
 	},
@@ -55,4 +57,6 @@ func init() {
 	subscriptionHelperCmd.MarkFlagRequired("target")
 	subscriptionHelperCmd.Flags().StringArrayP("subscription", "u", []string{}, "Subscription to refresh")
 	subscriptionHelperCmd.MarkFlagRequired("subscription")
+	subscriptionHelperCmd.Flags().StringArrayP("publication", "p", []string{}, "Publications to fetch chunks from")
+	subscriptionHelperCmd.MarkFlagRequired("publication")
 }
