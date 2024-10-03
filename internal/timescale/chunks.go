@@ -16,8 +16,8 @@ type Chunk struct {
 }
 
 type PublicationChunk struct {
-	Publication      string
-	IsPublished			 bool
+	Publication string
+	IsPublished bool
 	Chunk
 }
 
