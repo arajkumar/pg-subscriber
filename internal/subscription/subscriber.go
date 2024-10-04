@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
+
 	"github.com/timescale/pg-subscriber/internal/api"
 )
 
@@ -59,7 +61,7 @@ func (s *subscriber) upsertOrDeleteIntoCatalog(ctx context.Context, tables []api
 	createSchema := `CREATE SCHEMA IF NOT EXISTS _go_subscriber`
 	_, err := s.target.Exec(ctx, createSchema)
 	if err != nil {
-		return err
+		return fmt.Errorf("Error creating schema: %w", err)
 	}
 
 	// Create the table if it does not exist
@@ -82,7 +84,7 @@ func (s *subscriber) upsertOrDeleteIntoCatalog(ctx context.Context, tables []api
 	) ON COMMIT DELETE ROWS`
 	_, err = s.target.Exec(ctx, createTable)
 	if err != nil {
-		return err
+		return fmt.Errorf("Error creating temp table: %w", err)
 	}
 
 	insert := `INSERT INTO subscription_rel_temp (subname, schemaname, tablename, state) VALUES ($1::name, $2::name, $3::name, $4)`
@@ -90,7 +92,7 @@ func (s *subscriber) upsertOrDeleteIntoCatalog(ctx context.Context, tables []api
 	defaultState := INIT
 	tx, err := s.target.Begin(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("Error starting transaction: %w", err)
 	}
 
 	defer func() {
@@ -102,14 +104,14 @@ func (s *subscriber) upsertOrDeleteIntoCatalog(ctx context.Context, tables []api
 	for _, t := range tables {
 		_, err = tx.Exec(ctx, insert, s.name, t.SchemaName, t.TableName, defaultState)
 		if err != nil {
-			return err
+			return fmt.Errorf("Error inserting into temp table: %w", err)
 		}
 	}
 
 	upsert := `INSERT INTO _go_subscriber.subscription_rel (subname, schemaname, tablename, state) SELECT subname, schemaname, tablename, state FROM subscription_rel_temp ON CONFLICT DO NOTHING`
 	_, err = tx.Exec(ctx, upsert)
 	if err != nil {
-		return err
+		return fmt.Errorf("Error upserting into subscription_rel: %w", err)
 	}
 
 	del := `
@@ -122,7 +124,7 @@ func (s *subscriber) upsertOrDeleteIntoCatalog(ctx context.Context, tables []api
 	`
 	_, err = tx.Exec(ctx, del)
 	if err != nil {
-		return err
+		return fmt.Errorf("Error deleting from subscription_rel: %w", err)
 	}
 
 	tx.Commit(ctx)
@@ -135,8 +137,7 @@ func (s *subscriber) upsertOrDeleteIntoCatalog(ctx context.Context, tables []api
 func (s *subscriber) Refresh(ctx context.Context) error {
 	tables, err := s.publisher.FetchTables(ctx)
 	if err != nil {
-		fmt.Println("Error fetching tables: ", err)
-		return err
+		return fmt.Errorf("Error fetching tables to refresh: %w", err)
 	}
 
 	err = s.upsertOrDeleteIntoCatalog(ctx, tables)
@@ -150,10 +151,13 @@ func (s *subscriber) Name() string {
 
 // Implements the Subscriber interface Run method
 func (s *subscriber) Run(ctx context.Context) error {
+	zap.L().Debug("Starting subscriber", zap.String("name", s.Name()))
 	// Refresh the subscription
 	err := s.Refresh(ctx)
 	if err != nil {
-		fmt.Println("Error refreshing subscription: ", err)
+		return fmt.Errorf("Error refreshing subscription: %w", err)
 	}
+
+	// Start the apply worker
 	return err
 }

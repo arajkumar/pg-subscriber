@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"go.uber.org/zap"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/timescale/pg-subscriber/internal/api"
 )
 
@@ -27,6 +29,7 @@ func (p *publisher) Name() string {
 
 // Implements the Publisher interface FetchTables method
 func (p *publisher) FetchTables(ctx context.Context) ([]api.PublicationRelation, error) {
+	zap.L().Debug("Fetching tables for publication", zap.String("publication", p.name))
 	query := `SELECT
 		schemaname,
 		tablename
@@ -35,7 +38,7 @@ func (p *publisher) FetchTables(ctx context.Context) ([]api.PublicationRelation,
 
 	rows, err := p.source.Query(ctx, query, p.name)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error fetching tables for publication %s: %w", p.name, err)
 	}
 	defer rows.Close()
 
@@ -44,7 +47,7 @@ func (p *publisher) FetchTables(ctx context.Context) ([]api.PublicationRelation,
 		var table api.PublicationRelation
 		err := rows.Scan(&table.SchemaName, &table.TableName)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error scanning table: %w", err)
 		}
 		tables = append(tables, table)
 	}

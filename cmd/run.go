@@ -3,6 +3,7 @@ package cmd
 import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 
 	"github.com/timescale/pg-subscriber/internal/publication"
 	"github.com/timescale/pg-subscriber/internal/subscription"
@@ -14,6 +15,7 @@ var run = &cobra.Command{
 	Short: "Implementation of Postgres logical replication subscriber in Go.",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
+		zap.L().Info("Starting pg-subscriber")
 		subscriptions, _ := cmd.Flags().GetStringArray("subscription")
 		publications, _ := cmd.Flags().GetStringArray("publication")
 
