@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 
+	"github.com/timescale/pg-subscriber/internal/publication"
 	"github.com/timescale/pg-subscriber/internal/subscription"
 )
 
@@ -14,12 +16,28 @@ var run = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		subscriptions, _ := cmd.Flags().GetStringArray("subscription")
 		publications, _ := cmd.Flags().GetStringArray("publication")
-		subscription.Run(
-			cmd.Context(),
-			subscriptions,
-			publications,
-			cmd.Flag("source").Value.String(),
-			cmd.Flag("target").Value.String())
+
+		if len(publications) > 1 {
+			panic("Multiple publications are not supported yet.")
+		}
+
+		source, _ := cmd.Flags().GetString("source")
+		target, _ := cmd.Flags().GetString("target")
+
+		sourcePool, err := pgxpool.New(cmd.Context(), source)
+		if err != nil {
+			panic(err)
+		}
+
+		targetPool, err := pgxpool.New(cmd.Context(), target)
+		if err != nil {
+			panic(err)
+		}
+
+		pub := publication.New(publications[0], sourcePool)
+		sub := subscription.New(subscriptions[0], sourcePool, targetPool, pub)
+
+		sub.Run(cmd.Context())
 	},
 }
 

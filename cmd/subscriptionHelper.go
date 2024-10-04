@@ -6,7 +6,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/timescale/pg-subscriber/internal/subscription"
+	"github.com/timescale/pg-subscriber/internal/upstream"
 )
 
 // subscriptionHelperCmd represents the subscriptionHelper command
@@ -30,7 +30,7 @@ var subscriptionHelperCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		subscriptions, _ := cmd.Flags().GetStringArray("subscription")
 		publications, _ := cmd.Flags().GetStringArray("publication")
-		subscription.Run(
+		upstream.Run(
 			cmd.Context(),
 			subscriptions,
 			publications,

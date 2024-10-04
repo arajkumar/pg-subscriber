@@ -2,20 +2,21 @@ package subscription
 
 import (
 	"context"
+	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/timescale/pg-subscriber/internal/api"
 )
 
 type subscriber struct {
 	name      string
-	source    *pgxpool.Conn
-	target    *pgxpool.Conn
+	source    *pgxpool.Pool
+	target    *pgxpool.Pool
 	publisher api.Publisher
 }
 
 // Create a new subscriber
 // TODO: Support multiple publications
-func New(name string, source *pgxpool.Conn, target *pgxpool.Conn, publisher api.Publisher) api.Subscriber {
+func New(name string, source *pgxpool.Pool, target *pgxpool.Pool, publisher api.Publisher) api.Subscriber {
 	return &subscriber{
 		name,
 		source,
@@ -42,39 +43,40 @@ func New(name string, source *pgxpool.Conn, target *pgxpool.Conn, publisher api.
 // #define SUBREL_STATE_SYNCWAIT	'w' /* waiting for sync */
 // #define SUBREL_STATE_CATCHUP	'c' /* catching up with apply */
 const (
-	INIT         = 'i'
-	DATASYNC     = 'd'
-	FINISHEDCOPY = 'f'
-	SYNCDONE     = 's'
-	READY        = 'r'
-	UNKOWN       = '0'
-	SYNCWAIT     = 'w'
-	CATCHUP      = 'c'
+	INIT         = "i"
+	DATASYNC     = "d"
+	FINISHEDCOPY = "f"
+	SYNCDONE     = "s"
+	READY        = "r"
+	UNKOWN       = ""
+	SYNCWAIT     = "w"
+	CATCHUP      = "c"
 )
 
 func (s *subscriber) upsertIntoCatalog(ctx context.Context, tables []api.PublicationRelation) error {
 	// TODO: Use schema migration tool
 	// Create the schema if it does not exist
-	createSchema := `CREATE SCHEMA IF NOT EXISTS go_pg_subscriber`
+	createSchema := `CREATE SCHEMA IF NOT EXISTS _go_subscriber`
 	_, err := s.target.Exec(ctx, createSchema)
 	if err != nil {
 		return err
 	}
 
 	// Create the table if it does not exist
-	createTable := `CREATE TABLE IF NOT EXISTS go_pg_subscriber.subscription_rel (
+	createTable := `CREATE TABLE IF NOT EXISTS _go_subscriber.subscription_rel (
+		subname NAME NOT NULL,
 		schemaname NAME NOT NULL,
 		tablename NAME NOT NULL,
 		state char NOT NULL,
 		lsn pg_lsn,
-		PRIMARY KEY (schemaname, tablename)
+		PRIMARY KEY (subname, schemaname, tablename)
 	)`
 	_, err = s.target.Exec(ctx, createTable)
 	if err != nil {
 		return err
 	}
 
-	upsertTable := `INSERT INTO go_pg_subscriber.subscription_rel (schemaname, tablename, state, lsn) VALUES ($1, $2, $3, $4)`
+	upsertTable := `INSERT INTO _go_subscriber.subscription_rel (subname, schemaname, tablename, state) VALUES ($1::name, $2::name, $3::name, $4)`
 	defaultState := INIT
 
 	// Use transaction to insert all the tables in one go
@@ -90,7 +92,7 @@ func (s *subscriber) upsertIntoCatalog(ctx context.Context, tables []api.Publica
 	}()
 
 	for _, t := range tables {
-		_, err = tx.Exec(ctx, upsertTable, t.SchemaName, t.TableName, defaultState, nil)
+		_, err = tx.Exec(ctx, upsertTable, s.name, t.SchemaName, t.TableName, defaultState)
 		if err != nil {
 			return err
 		}
@@ -104,6 +106,11 @@ func (s *subscriber) upsertIntoCatalog(ctx context.Context, tables []api.Publica
 // populates go_pg_subscriber.subscription_rel
 func (s *subscriber) Refresh(ctx context.Context) error {
 	tables, err := s.publisher.FetchTables(ctx)
+	if err != nil {
+		fmt.Println("Error fetching tables: ", err)
+		return err
+	}
+
 	err = s.upsertIntoCatalog(ctx, tables)
 	return err
 }
@@ -111,4 +118,14 @@ func (s *subscriber) Refresh(ctx context.Context) error {
 // Implements the Subscriber interface Name method
 func (s *subscriber) Name() string {
 	return s.name
+}
+
+// Implements the Subscriber interface Run method
+func (s *subscriber) Run(ctx context.Context) error {
+	// Refresh the subscription
+	err := s.Refresh(ctx)
+	if err != nil {
+		fmt.Println("Error refreshing subscription: ", err)
+	}
+	return err
 }

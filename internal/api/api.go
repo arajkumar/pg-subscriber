@@ -31,4 +31,6 @@ type Subscriber interface {
 	// Refresh fetches the list of tables that are part of the publication and
 	// populates go_pg_subscriber.subscription_rel
 	Refresh(ctx context.Context) error
+
+	Run(ctx context.Context) error
 }
