@@ -38,7 +38,6 @@ func (p *publisher) FetchTables(ctx context.Context) ([]api.PublicationRelation,
 		return nil, err
 	}
 	defer rows.Close()
-	fmt.Println("Fetching tables for publication: ", p.name)
 
 	var tables []api.PublicationRelation
 	for rows.Next() {

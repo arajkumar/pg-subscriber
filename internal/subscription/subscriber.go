@@ -53,7 +53,7 @@ const (
 	CATCHUP      = "c"
 )
 
-func (s *subscriber) upsertIntoCatalog(ctx context.Context, tables []api.PublicationRelation) error {
+func (s *subscriber) upsertOrDeleteIntoCatalog(ctx context.Context, tables []api.PublicationRelation) error {
 	// TODO: Use schema migration tool
 	// Create the schema if it does not exist
 	createSchema := `CREATE SCHEMA IF NOT EXISTS _go_subscriber`
@@ -76,10 +76,18 @@ func (s *subscriber) upsertIntoCatalog(ctx context.Context, tables []api.Publica
 		return err
 	}
 
-	upsertTable := `INSERT INTO _go_subscriber.subscription_rel (subname, schemaname, tablename, state) VALUES ($1::name, $2::name, $3::name, $4)`
-	defaultState := INIT
+	// Create the temp table to stage the data
+	createTable = `CREATE TEMP TABLE IF NOT EXISTS subscription_rel_temp (
+		LIKE _go_subscriber.subscription_rel INCLUDING ALL
+	) ON COMMIT DELETE ROWS`
+	_, err = s.target.Exec(ctx, createTable)
+	if err != nil {
+		return err
+	}
 
-	// Use transaction to insert all the tables in one go
+	insert := `INSERT INTO subscription_rel_temp (subname, schemaname, tablename, state) VALUES ($1::name, $2::name, $3::name, $4)`
+
+	defaultState := INIT
 	tx, err := s.target.Begin(ctx)
 	if err != nil {
 		return err
@@ -92,11 +100,31 @@ func (s *subscriber) upsertIntoCatalog(ctx context.Context, tables []api.Publica
 	}()
 
 	for _, t := range tables {
-		_, err = tx.Exec(ctx, upsertTable, s.name, t.SchemaName, t.TableName, defaultState)
+		_, err = tx.Exec(ctx, insert, s.name, t.SchemaName, t.TableName, defaultState)
 		if err != nil {
 			return err
 		}
 	}
+
+	upsert := `INSERT INTO _go_subscriber.subscription_rel (subname, schemaname, tablename, state) SELECT subname, schemaname, tablename, state FROM subscription_rel_temp ON CONFLICT DO NOTHING`
+	_, err = tx.Exec(ctx, upsert)
+	if err != nil {
+		return err
+	}
+
+	del := `
+	WITH deleted AS (
+		SELECT subname, schemaname, tablename FROM _go_subscriber.subscription_rel
+		LEFT JOIN subscription_rel_temp USING (subname, schemaname, tablename)
+		WHERE subscription_rel_temp.subname IS NULL
+	)
+	DELETE FROM _go_subscriber.subscription_rel WHERE (subname, schemaname, tablename) IN (SELECT subname, schemaname, tablename FROM deleted)
+	`
+	_, err = tx.Exec(ctx, del)
+	if err != nil {
+		return err
+	}
+
 	tx.Commit(ctx)
 
 	return nil
@@ -111,7 +139,7 @@ func (s *subscriber) Refresh(ctx context.Context) error {
 		return err
 	}
 
-	err = s.upsertIntoCatalog(ctx, tables)
+	err = s.upsertOrDeleteIntoCatalog(ctx, tables)
 	return err
 }
 
