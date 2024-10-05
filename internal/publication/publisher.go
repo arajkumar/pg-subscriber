@@ -10,6 +10,8 @@ import (
 	"github.com/timescale/pg-subscriber/internal/api"
 )
 
+var _ api.Publisher = (*publisher)(nil)
+
 type publisher struct {
 	name   string
 	source *pgxpool.Pool
