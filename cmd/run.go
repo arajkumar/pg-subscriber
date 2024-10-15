@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
@@ -19,25 +19,21 @@ var run = &cobra.Command{
 		subscriptions, _ := cmd.Flags().GetStringArray("subscription")
 		publications, _ := cmd.Flags().GetStringArray("publication")
 
-		if len(publications) > 1 {
-			panic("Multiple publications are not supported yet.")
-		}
-
 		source, _ := cmd.Flags().GetString("source")
 		target, _ := cmd.Flags().GetString("target")
 
-		sourcePool, err := pgxpool.New(cmd.Context(), source)
+		sourceConn, err := pgx.Connect(cmd.Context(), source)
 		if err != nil {
 			panic(err)
 		}
 
-		targetPool, err := pgxpool.New(cmd.Context(), target)
+		targetConn, err := pgx.Connect(cmd.Context(), target)
 		if err != nil {
 			panic(err)
 		}
 
-		pub := publication.New(publications[0], sourcePool)
-		sub := subscription.New(subscriptions[0], sourcePool, targetPool, pub)
+		pub := publication.New(publications, sourceConn)
+		sub := subscription.New(subscriptions[0], targetConn, pub)
 
 		sub.Run(cmd.Context())
 	},
@@ -54,4 +50,5 @@ func init() {
 	run.MarkFlagRequired("subscription")
 	run.Flags().StringArrayP("publication", "p", []string{}, "Publications to fetch chunks from")
 	run.MarkFlagRequired("publication")
+	run.Flags().BoolP("copy-data", "c", true, "Specifies the existing data to be copied to the target")
 }

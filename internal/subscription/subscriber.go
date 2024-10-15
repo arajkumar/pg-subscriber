@@ -3,27 +3,23 @@ package subscription
 import (
 	"context"
 	"fmt"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
 
-	"github.com/timescale/pg-subscriber/internal/api"
+	pub "github.com/timescale/pg-subscriber/internal/publication"
 )
 
-var _ api.Subscriber = (*subscriber)(nil)
-
-type subscriber struct {
+type Subscriber struct {
 	name      string
-	source    *pgxpool.Pool
-	target    *pgxpool.Pool
-	publisher api.Publisher
+	target    *pgx.Conn
+	publisher *pub.Publisher
 }
 
 // Create a new subscriber
 // TODO: Support multiple publications
-func New(name string, source *pgxpool.Pool, target *pgxpool.Pool, publisher api.Publisher) api.Subscriber {
-	return &subscriber{
+func New(name string, target *pgx.Conn, publisher *pub.Publisher) *Subscriber {
+	return &Subscriber{
 		name,
-		source,
 		target,
 		publisher,
 	}
@@ -57,7 +53,7 @@ const (
 	CATCHUP      = "c"
 )
 
-func (s *subscriber) upsertOrDeleteIntoCatalog(ctx context.Context, tables []api.PublicationRelation) error {
+func (s *Subscriber) upsertOrDeleteIntoCatalog(ctx context.Context, tables []pub.PublicationRelation) error {
 	// TODO: Use schema migration tool
 	// Create the schema if it does not exist
 	createSchema := `CREATE SCHEMA IF NOT EXISTS _go_subscriber`
@@ -136,7 +132,7 @@ func (s *subscriber) upsertOrDeleteIntoCatalog(ctx context.Context, tables []api
 
 // Fetches the list of tables that are part of the publication and
 // populates go_pg_subscriber.subscription_rel
-func (s *subscriber) Refresh(ctx context.Context) error {
+func (s *Subscriber) Refresh(ctx context.Context) error {
 	tables, err := s.publisher.FetchTables(ctx)
 	if err != nil {
 		return fmt.Errorf("Error fetching tables to refresh: %w", err)
@@ -146,18 +142,12 @@ func (s *subscriber) Refresh(ctx context.Context) error {
 	return err
 }
 
-// Implements the Subscriber interface Name method
-func (s *subscriber) Name() string {
-	return s.name
-}
-
-// Implements the Subscriber interface Run method
-func (s *subscriber) Run(ctx context.Context) error {
-	zap.L().Debug("Starting subscriber", zap.String("name", s.Name()))
+func (s *Subscriber) Run(ctx context.Context) error {
+	zap.L().Debug("Starting subscriber", zap.String("name", s.name))
 	// Refresh the subscription
 	err := s.Refresh(ctx)
 	if err != nil {
-		return fmt.Errorf("Error refreshing subscription: %w", err)
+		return fmt.Errorf("Error refreshing subscription catalog: %w", err)
 	}
 
 	// Start the apply worker

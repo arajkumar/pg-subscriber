@@ -4,33 +4,39 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/timescale/pg-subscriber/internal/api"
 )
 
-var _ api.Publisher = (*publisher)(nil)
-
-type publisher struct {
-	name   string
-	source *pgxpool.Pool
+type Relation struct {
+	SchemaName string
+	TableName  string
+	AttNames   []string
 }
 
-func New(name string, source *pgxpool.Pool) api.Publisher {
-	return &publisher{
+type PublicationRelation struct {
+	Relation
+	RowFilter string
+}
+
+type Publisher struct {
+	name   string
+	source *pgx.Conn
+}
+
+func New(publications []string, source *pgx.Conn) *Publisher {
+	if len(publications) > 1 {
+		panic("Multiple publications are not supported yet.")
+	}
+
+	name := publications[0]
+	return &Publisher{
 		name,
 		source,
 	}
 }
 
-// Implements the Publisher interface Name method
-func (p *publisher) Name() string {
-	return p.name
-}
-
-// Implements the Publisher interface FetchTables method
-func (p *publisher) FetchTables(ctx context.Context) ([]api.PublicationRelation, error) {
+func (p *Publisher) FetchTables(ctx context.Context) ([]PublicationRelation, error) {
 	zap.L().Debug("Fetching tables for publication", zap.String("publication", p.name))
 	query := `SELECT
 		schemaname,
@@ -44,15 +50,17 @@ func (p *publisher) FetchTables(ctx context.Context) ([]api.PublicationRelation,
 	}
 	defer rows.Close()
 
-	var tables []api.PublicationRelation
+	var tables []PublicationRelation
 	for rows.Next() {
-		var table api.PublicationRelation
+		var table PublicationRelation
 		err := rows.Scan(&table.SchemaName, &table.TableName)
 		if err != nil {
 			return nil, fmt.Errorf("error scanning table: %w", err)
 		}
 		tables = append(tables, table)
 	}
+
+	zap.L().Debug("Fetched tables from publication", zap.String("publication", p.name), zap.Int("count", len(tables)))
 
 	return tables, nil
 }
