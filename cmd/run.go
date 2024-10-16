@@ -1,10 +1,10 @@
 package cmd
 
 import (
-	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
+	"github.com/timescale/pg-subscriber/internal/conn"
 	"github.com/timescale/pg-subscriber/internal/publication"
 	"github.com/timescale/pg-subscriber/internal/subscription"
 )
@@ -15,27 +15,38 @@ var run = &cobra.Command{
 	Short: "Implementation of Postgres logical replication subscriber in Go.",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx := cmd.Context()
 		zap.L().Info("Starting pg-subscriber")
 		subscriptions, _ := cmd.Flags().GetStringArray("subscription")
 		publications, _ := cmd.Flags().GetStringArray("publication")
 
-		source, _ := cmd.Flags().GetString("source")
-		target, _ := cmd.Flags().GetString("target")
+		sourceConn, _ := cmd.Flags().GetString("source")
+		targetConn, _ := cmd.Flags().GetString("target")
 
-		sourceConn, err := pgx.Connect(cmd.Context(), source)
+		source, err := conn.Parse(sourceConn)
 		if err != nil {
 			panic(err)
 		}
 
-		targetConn, err := pgx.Connect(cmd.Context(), target)
+		target, err := conn.Parse(targetConn)
 		if err != nil {
 			panic(err)
 		}
 
-		pub := publication.New(publications, sourceConn)
-		sub := subscription.New(subscriptions[0], targetConn, pub)
+		pub, err := publication.New(ctx, publications, source.AsSource())
+		if err != nil {
+			panic(err)
+		}
 
-		sub.Run(cmd.Context())
+		sub, err := subscription.New(ctx, subscriptions[0], target.AsTarget(), pub)
+		if err != nil {
+			panic(err)
+		}
+
+		err = sub.Sync(ctx)
+		if err != nil {
+			panic(err)
+		}
 	},
 }
 

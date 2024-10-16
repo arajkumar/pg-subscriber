@@ -2,23 +2,31 @@ package apply
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"go.uber.org/zap"
 
-	"github.com/timescale/pg-subscriber/internal/api"
+	pub "github.com/timescale/pg-subscriber/internal/publication"
+	sub "github.com/timescale/pg-subscriber/internal/subscription"
 )
 
 type Apply struct {
+	source *pgconn.PgConn
+	target *pgx.Conn
+	pub    *pub.Publisher
+	sub    *sub.Subscriber
 }
 
-func New(ctx context.Context, conn *pgconn.PgConn) (*Apply, error) {
-	return &Apply{}, nil
+func New(ctx context.Context, pub *pub.Publisher, sub *sub.Subscriber) (*Apply, error) {
+	return &Apply{
+		pub: pub,
+		sub: sub,
+	}, nil
 }
 
-func StartApply(ctx context.Context, conn *pgconn.PgConn, subscriber api.Subscriber) error {
+func StartApply(ctx context.Context) error {
 	zap.L().Debug("Starting apply")
 
 	return nil
