@@ -197,14 +197,23 @@ func (s *Subscriber) startReplication(ctx context.Context, sourceConn *pgconn.Pg
 	if slotExists {
 		zap.L().Info("Replication slot already exists", zap.String("SlotName", slotName))
 	} else {
-		_, err = pglogrepl.CreateReplicationSlot(ctx, sourceConn, slotName, "pgoutput", pglogrepl.CreateReplicationSlotOptions{Temporary: false})
+		opts := pglogrepl.CreateReplicationSlotOptions{
+			Temporary: false,
+			Mode:      pglogrepl.LogicalReplication,
+		}
+
+		_, err = pglogrepl.CreateReplicationSlot(ctx, sourceConn, slotName, "pgoutput", opts)
 		if err != nil {
 			return fmt.Errorf("Error creating replication slot: %w", err)
 		}
 		zap.L().Info("CreateReplicationSlot", zap.String("SlotName", slotName))
 	}
 
-	err = pglogrepl.StartReplication(ctx, sourceConn, slotName, sysident.XLogPos, pglogrepl.StartReplicationOptions{PluginArgs: pluginArguments})
+	opts := pglogrepl.StartReplicationOptions{
+		PluginArgs: pluginArguments,
+		Mode:       pglogrepl.LogicalReplication,
+	}
+	err = pglogrepl.StartReplication(ctx, sourceConn, slotName, sysident.XLogPos, opts)
 	if err != nil {
 		return fmt.Errorf("Error starting replication: %w", err)
 	}
@@ -233,6 +242,12 @@ func (s *Subscriber) Sync(ctx context.Context) error {
 		return fmt.Errorf("Error starting replication: %w", err)
 	}
 
+	target, err := s.target.ApplyConnection(ctx, s.name)
+	if err != nil {
+		return fmt.Errorf("Error creating apply connection: %w", err)
+	}
+
 	// Start the apply worker
+	err = StartApply(ctx, sourceConn, target, 0)
 	return err
 }
