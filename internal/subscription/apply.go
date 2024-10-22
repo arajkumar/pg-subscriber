@@ -6,14 +6,16 @@ import (
 	"time"
 
 	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgx/v5"
+	_ "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	_ "github.com/jackc/pgx/v5/pgtype"
 	"go.uber.org/zap"
+
+	"github.com/timescale/pg-subscriber/internal/conn"
 )
 
-func StartApply(ctx context.Context, source *pgconn.PgConn, target *pgx.Conn, start pglogrepl.LSN) error {
+func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.ApplyConn, start pglogrepl.LSN) error {
 	zap.L().Debug("Starting apply")
 
 	clientXLogPos := start
@@ -25,7 +27,7 @@ func StartApply(ctx context.Context, source *pgconn.PgConn, target *pgx.Conn, st
 	for {
 		if time.Now().After(nextStandbyMessageDeadline) {
 			// TODO: Send write, flush, apply LSN
-			err := pglogrepl.SendStandbyStatusUpdate(ctx, source, pglogrepl.StandbyStatusUpdate{WALWritePosition: clientXLogPos})
+			err := pglogrepl.SendStandbyStatusUpdate(ctx, source.PgConn, pglogrepl.StandbyStatusUpdate{WALWritePosition: clientXLogPos})
 			if err != nil {
 				return fmt.Errorf("Error during send status update: %w", err)
 			}
@@ -34,7 +36,7 @@ func StartApply(ctx context.Context, source *pgconn.PgConn, target *pgx.Conn, st
 		}
 
 		ctx, cancel := context.WithDeadline(ctx, nextStandbyMessageDeadline)
-		rawMsg, err := source.ReceiveMessage(ctx)
+		rawMsg, err := source.PgConn.ReceiveMessage(ctx)
 		cancel()
 		if err != nil {
 			if pgconn.Timeout(err) {

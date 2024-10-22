@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"go.uber.org/zap"
 
 	"github.com/timescale/pg-subscriber/internal/conn"
@@ -174,12 +173,16 @@ func (s *Subscriber) refresh(ctx context.Context) error {
 	return err
 }
 
-func (s *Subscriber) startReplication(ctx context.Context, sourceConn *pgconn.PgConn) error {
-	sysident, err := pglogrepl.IdentifySystem(ctx, sourceConn)
+func (s *Subscriber) startReplication(ctx context.Context, sourceConn *conn.ReceiveConn) error {
+	sysident, err := pglogrepl.IdentifySystem(ctx, sourceConn.PgConn)
 	if err != nil {
 		return fmt.Errorf("Error identifying system: %w", err)
 	}
-	zap.L().Info("IdentifySystem", zap.String("SystemID", sysident.SystemID), zap.Int32("Timeline", sysident.Timeline), zap.String("XLogPos", sysident.XLogPos.String()), zap.String("DBName", sysident.DBName))
+
+	zap.L().Info("IdentifySystem", zap.String("SystemID", sysident.SystemID),
+		zap.Int32("Timeline", sysident.Timeline),
+		zap.String("XLogPos", sysident.XLogPos.String()),
+		zap.String("DBName", sysident.DBName))
 
 	pluginArguments := []string{
 		"proto_version '1'",
@@ -202,7 +205,7 @@ func (s *Subscriber) startReplication(ctx context.Context, sourceConn *pgconn.Pg
 			Mode:      pglogrepl.LogicalReplication,
 		}
 
-		_, err = pglogrepl.CreateReplicationSlot(ctx, sourceConn, slotName, "pgoutput", opts)
+		_, err = pglogrepl.CreateReplicationSlot(ctx, sourceConn.PgConn, slotName, "pgoutput", opts)
 		if err != nil {
 			return fmt.Errorf("Error creating replication slot: %w", err)
 		}
@@ -213,7 +216,7 @@ func (s *Subscriber) startReplication(ctx context.Context, sourceConn *pgconn.Pg
 		PluginArgs: pluginArguments,
 		Mode:       pglogrepl.LogicalReplication,
 	}
-	err = pglogrepl.StartReplication(ctx, sourceConn, slotName, sysident.XLogPos, opts)
+	err = pglogrepl.StartReplication(ctx, sourceConn.PgConn, slotName, sysident.XLogPos, opts)
 	if err != nil {
 		return fmt.Errorf("Error starting replication: %w", err)
 	}
@@ -232,7 +235,7 @@ func (s *Subscriber) Sync(ctx context.Context) error {
 
 	// Acquire replication connect to the source database
 	zap.L().Debug("Acquiring replication connection", zap.String("name", s.name))
-	sourceConn, err := s.publisher.Conn().ReplicationConnect(ctx)
+	sourceConn, err := s.publisher.Conn().ReceiveConn(ctx)
 	if err != nil {
 		return fmt.Errorf("Error acquiring replication connection: %w", err)
 	}
@@ -242,12 +245,12 @@ func (s *Subscriber) Sync(ctx context.Context) error {
 		return fmt.Errorf("Error starting replication: %w", err)
 	}
 
-	target, err := s.target.ApplyConnection(ctx, s.name)
+	applyConn, err := s.target.ApplyConn(ctx, s.name)
 	if err != nil {
 		return fmt.Errorf("Error creating apply connection: %w", err)
 	}
 
 	// Start the apply worker
-	err = StartApply(ctx, sourceConn, target, 0)
+	err = StartApply(ctx, sourceConn, applyConn, 0)
 	return err
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -55,8 +56,12 @@ func (c *Conn) Connect(ctx context.Context) (*pgx.Conn, error) {
 	return conn, nil
 }
 
+type ReceiveConn struct {
+	*pgconn.PgConn
+}
+
 // Connect to the database with replication parameter
-func (s *Source) ReplicationConnect(ctx context.Context) (*pgconn.PgConn, error) {
+func (s *Source) ReceiveConn(ctx context.Context) (*ReceiveConn, error) {
 	conf := s.ConnConfig.Copy()
 	conf.RuntimeParams["replication"] = "database"
 
@@ -66,11 +71,17 @@ func (s *Source) ReplicationConnect(ctx context.Context) (*pgconn.PgConn, error)
 		return nil, fmt.Errorf("error replication connection to database: %w", err)
 	}
 
-	return pgConn, nil
+	return &ReceiveConn{pgConn}, nil
+}
+
+type ApplyConn struct {
+	*Target
+	*pgx.Conn
+	origin string
 }
 
 // Target connection with replication session and origin
-func (t *Target) ApplyConnection(ctx context.Context, origin string) (*pgx.Conn, error) {
+func (t *Target) ApplyConn(ctx context.Context, origin string) (*ApplyConn, error) {
 	conn, err := pgx.ConnectConfig(ctx, t.ConnConfig)
 	if err != nil {
 		return nil, fmt.Errorf("Error connecting to target: %w", err)
@@ -100,5 +111,24 @@ func (t *Target) ApplyConnection(ctx context.Context, origin string) (*pgx.Conn,
 	if err != nil {
 		return nil, fmt.Errorf("Error on replication origin setup: %w", err)
 	}
-	return conn, nil
+	return &ApplyConn {
+		Target: t,
+		Conn: conn,
+		origin: origin,
+	}, nil
+}
+
+func (t* ApplyConn) OriginProgress(ctx context.Context, flush bool) (lsn pglogrepl.LSN, err error) {
+	conn := t.Conn
+	if conn == nil {
+		panic("Target Replication is not initialized")
+	}
+
+	q := `SELECT pg_replication_origin_progress($1, $2)`
+	err = conn.QueryRow(ctx, q, t.origin, flush).Scan(&lsn)
+	if err != nil {
+		return lsn, fmt.Errorf("Error on replication origin progress: %w", err)
+	}
+
+	return lsn, nil
 }
