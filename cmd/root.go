@@ -12,9 +12,9 @@ import (
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "pg-subscriber",
+	Use:   "timescaledb-cdc",
 	Short: "Reimplementation of Postgres logical replication in Go.",
-	Long: `pg-subscriber is a reimplementation of Postgres logical replication in
+	Long: `timescaledb-cdc is a reimplementation of Postgres logical replication in
 	Go.`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:

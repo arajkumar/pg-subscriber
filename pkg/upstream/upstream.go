@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/jackc/pgx/v5"
-	"github.com/timescale/pg-subscriber/internal/timescale"
+	"github.com/timescale/timescaledb-cdc/pkg/timescale"
 	"time"
 )
 

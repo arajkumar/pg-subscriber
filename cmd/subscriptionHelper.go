@@ -6,7 +6,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/timescale/pg-subscriber/internal/upstream"
+	"github.com/timescale/timescaledb-cdc/pkg/upstream"
 )
 
 // subscriptionHelperCmd represents the subscriptionHelper command

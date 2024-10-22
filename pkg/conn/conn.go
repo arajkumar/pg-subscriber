@@ -23,7 +23,7 @@ type Conn struct {
 }
 
 const (
-	appName = "pg-subscriber"
+	appName = "timescaledb-cdc"
 )
 
 func Parse(connString string) (*Conn, error) {

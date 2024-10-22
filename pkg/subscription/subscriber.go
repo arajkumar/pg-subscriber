@@ -7,8 +7,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
 
-	"github.com/timescale/pg-subscriber/internal/conn"
-	pub "github.com/timescale/pg-subscriber/internal/publication"
+	"github.com/timescale/timescaledb-cdc/pkg/conn"
+	pub "github.com/timescale/timescaledb-cdc/pkg/publication"
 )
 
 type Subscriber struct {

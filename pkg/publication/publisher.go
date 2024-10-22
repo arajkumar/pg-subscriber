@@ -7,7 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
 
-	"github.com/timescale/pg-subscriber/internal/conn"
+	"github.com/timescale/timescaledb-cdc/pkg/conn"
 )
 
 type Relation struct {

@@ -12,7 +12,7 @@ import (
 	_ "github.com/jackc/pgx/v5/pgtype"
 	"go.uber.org/zap"
 
-	"github.com/timescale/pg-subscriber/internal/conn"
+	"github.com/timescale/timescaledb-cdc/pkg/conn"
 )
 
 func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.ApplyConn, start pglogrepl.LSN) error {
