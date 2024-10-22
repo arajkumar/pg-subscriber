@@ -25,6 +25,13 @@ func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.Appl
 	// typeMap := pgtype.NewMap()
 
 	for {
+		// This breaks the loop upon cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		if time.Now().After(nextStandbyMessageDeadline) {
 			// TODO: Send write, flush, apply LSN
 			err := pglogrepl.SendStandbyStatusUpdate(ctx, source.PgConn, pglogrepl.StandbyStatusUpdate{WALWritePosition: clientXLogPos})

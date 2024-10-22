@@ -65,7 +65,7 @@ func prepareDBS(t *testing.T, ctx context.Context) TestDBS {
 	return dbs
 }
 
-func (d *TestDB) Query(t *testing.T, ctx context.Context, query string, params ...interface{}) pgx.Row {
+func (d *TestDB) QueryRow(t *testing.T, ctx context.Context, query string, params ...interface{}) pgx.Row {
 	dbURL, err := d.container.ConnectionString(ctx)
 	require.NoError(t, err)
 
