@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -52,8 +51,8 @@ func TestCatalogPopulation(t *testing.T) {
 			subname, schema, table).Scan(&exists)
 		errMsg := fmt.Sprintf("Failed for subname %s schema %s table %s expected %t",
 			subname, schema, table, expectedExists)
-		if !errors.Is(err, pgx.ErrNoRows) {
-			require.NoError(t, err, errMsg)
+		if !expectedExists {
+			require.ErrorIs(t, err, pgx.ErrNoRows, errMsg)
 		}
 		require.Equal(t, expectedExists, exists, errMsg)
 	}
