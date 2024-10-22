@@ -62,33 +62,38 @@ const (
 	CATCHUP      = "c"
 )
 
+const (
+	catalogSchema          = "_timescaledb_cdc"
+	catalogSubscriptionRel = "subscription_rel"
+)
+
 func (s *Subscriber) upsertOrDeleteIntoCatalog(ctx context.Context, tables []pub.PublicationRelation) error {
 	// TODO: Use schema migration tool
 	// Create the schema if it does not exist
-	createSchema := `CREATE SCHEMA IF NOT EXISTS _go_subscriber`
+	createSchema := fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, catalogSchema)
 	_, err := s.targetConn.Exec(ctx, createSchema)
 	if err != nil {
 		return fmt.Errorf("Error creating schema: %w", err)
 	}
 
 	// Create the table if it does not exist
-	createTable := `CREATE TABLE IF NOT EXISTS _go_subscriber.subscription_rel (
+	createTable := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s (
 		subname NAME NOT NULL,
 		schemaname NAME NOT NULL,
 		tablename NAME NOT NULL,
 		state char NOT NULL,
 		lsn pg_lsn,
 		PRIMARY KEY (subname, schemaname, tablename)
-	)`
+	)`, catalogSchema, catalogSubscriptionRel)
 	_, err = s.targetConn.Exec(ctx, createTable)
 	if err != nil {
 		return err
 	}
 
 	// Create the temp table to stage the data
-	createTable = `CREATE TEMP TABLE IF NOT EXISTS subscription_rel_temp (
-		LIKE _go_subscriber.subscription_rel INCLUDING ALL
-	) ON COMMIT DELETE ROWS`
+	createTable = fmt.Sprintf(`CREATE TEMP TABLE IF NOT EXISTS subscription_rel_temp (
+		LIKE %s.%s INCLUDING ALL
+	) ON COMMIT DELETE ROWS`, catalogSchema, catalogSubscriptionRel)
 	_, err = s.targetConn.Exec(ctx, createTable)
 	if err != nil {
 		return fmt.Errorf("Error creating temp table: %w", err)
@@ -115,20 +120,20 @@ func (s *Subscriber) upsertOrDeleteIntoCatalog(ctx context.Context, tables []pub
 		}
 	}
 
-	upsert := `INSERT INTO _go_subscriber.subscription_rel (subname, schemaname, tablename, state) SELECT subname, schemaname, tablename, state FROM subscription_rel_temp ON CONFLICT DO NOTHING`
+	upsert := fmt.Sprintf(`INSERT INTO %s.%s (subname, schemaname, tablename, state) SELECT subname, schemaname, tablename, state FROM subscription_rel_temp ON CONFLICT DO NOTHING`, catalogSchema, catalogSubscriptionRel)
 	_, err = tx.Exec(ctx, upsert)
 	if err != nil {
 		return fmt.Errorf("Error upserting into subscription_rel: %w", err)
 	}
 
-	del := `
+	del := fmt.Sprintf(`
 	WITH deleted AS (
-		SELECT subname, schemaname, tablename FROM _go_subscriber.subscription_rel
+		SELECT subname, schemaname, tablename FROM %[1]s.%[2]s
 		LEFT JOIN subscription_rel_temp USING (subname, schemaname, tablename)
 		WHERE subscription_rel_temp.subname IS NULL
 	)
-	DELETE FROM _go_subscriber.subscription_rel WHERE (subname, schemaname, tablename) IN (SELECT subname, schemaname, tablename FROM deleted)
-	`
+	DELETE FROM %[1]s.%[2]s WHERE (subname, schemaname, tablename) IN (SELECT subname, schemaname, tablename FROM deleted)
+	`, catalogSchema, catalogSubscriptionRel)
 	_, err = tx.Exec(ctx, del)
 	if err != nil {
 		return fmt.Errorf("Error deleting from subscription_rel: %w", err)

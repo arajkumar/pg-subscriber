@@ -13,17 +13,16 @@ func TestLiveReplication(t *testing.T) {
 	ctx := context.TODO()
 	dbs := prepareDBS(t, ctx)
 
-	dbs.Exec(t, ctx,
-	`CREATE TABLE metrics (
-		id integer,
-		time timestamptz,
-		name text,
-		value numeric)`)
+	ddl := `
+	CREATE TABLE metrics (id integer, time timestamptz, name text, value numeric);
+	CREATE PUBLICATION pub FOR TABLE metrics;
+	`
+	dbs.Exec(t, ctx, ddl)
 
-	publications := []string {
+	publications := []string{
 		"pub",
 	}
-	subscriptions := []string {
+	subscriptions := []string{
 		"sub",
 	}
 

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -111,14 +111,14 @@ func (t *Target) ApplyConn(ctx context.Context, origin string) (*ApplyConn, erro
 	if err != nil {
 		return nil, fmt.Errorf("Error on replication origin setup: %w", err)
 	}
-	return &ApplyConn {
+	return &ApplyConn{
 		Target: t,
-		Conn: conn,
+		Conn:   conn,
 		origin: origin,
 	}, nil
 }
 
-func (t* ApplyConn) OriginProgress(ctx context.Context, flush bool) (lsn pglogrepl.LSN, err error) {
+func (t *ApplyConn) OriginProgress(ctx context.Context, flush bool) (lsn pglogrepl.LSN, err error) {
 	conn := t.Conn
 	if conn == nil {
 		panic("Target Replication is not initialized")

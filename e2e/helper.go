@@ -4,11 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stretchr/testify/require"
 	"github.com/jackc/pgx/v5"
+	"github.com/stretchr/testify/require"
 
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
 type TestDB struct {
@@ -26,38 +26,38 @@ func prepareDBS(t *testing.T, ctx context.Context) TestDBS {
 	dbPassword := "password"
 
 	sourceCon, err := postgres.Run(ctx,
-	"docker.io/postgres:16-alpine",
-	postgres.WithDatabase(dbName),
-	postgres.WithUsername(dbUser),
-	postgres.WithPassword(dbPassword),
-	postgres.BasicWaitStrategies(),
-	postgres.WithSQLDriver("pgx"),
-	testcontainers.CustomizeRequest(testcontainers.GenericContainerRequest{
-        ContainerRequest: testcontainers.ContainerRequest{
-            Cmd: []string{
-							"-c", "log_statement=all",
-							"-c", "wal_level=logical",
-						},
-        },
-    }),
+		"docker.io/postgres:16-alpine",
+		postgres.WithDatabase(dbName),
+		postgres.WithUsername(dbUser),
+		postgres.WithPassword(dbPassword),
+		postgres.BasicWaitStrategies(),
+		postgres.WithSQLDriver("pgx"),
+		testcontainers.CustomizeRequest(testcontainers.GenericContainerRequest{
+			ContainerRequest: testcontainers.ContainerRequest{
+				Cmd: []string{
+					"-c", "log_statement=all",
+					"-c", "wal_level=logical",
+				},
+			},
+		}),
 	)
 
 	require.NoError(t, err)
 	require.NotNilf(t, sourceCon, "source container is nil")
 
 	targetCon, err := postgres.Run(ctx,
-	"docker.io/timescale/timescaledb-ha:pg16-ts2.16",
-	postgres.WithDatabase(dbName),
-	postgres.WithUsername(dbUser),
-	postgres.WithPassword(dbPassword),
-	postgres.BasicWaitStrategies(),
-	postgres.WithSQLDriver("pgx"),
+		"docker.io/timescale/timescaledb-ha:pg16-ts2.16",
+		postgres.WithDatabase(dbName),
+		postgres.WithUsername(dbUser),
+		postgres.WithPassword(dbPassword),
+		postgres.BasicWaitStrategies(),
+		postgres.WithSQLDriver("pgx"),
 	)
 
 	require.NotNilf(t, targetCon, "target container is nil")
 	require.NoError(t, err)
 
-	dbs := TestDBS {
+	dbs := TestDBS{
 		&TestDB{container: sourceCon},
 		&TestDB{container: targetCon},
 	}
@@ -70,7 +70,7 @@ func (d *TestDB) Query(t *testing.T, ctx context.Context, query string, params .
 	require.NoError(t, err)
 
 	conn, err := pgx.Connect(ctx, dbURL)
-  require.NoError(t, err)
+	require.NoError(t, err)
 	return conn.QueryRow(ctx, query, params...)
 }
 
@@ -79,9 +79,9 @@ func (d *TestDB) Exec(t *testing.T, ctx context.Context, query string, params ..
 	require.NoError(t, err)
 
 	conn, err := pgx.Connect(ctx, dbURL)
-  require.NoError(t, err)
-	_, err = conn.Exec(ctx, query, params...);
-  require.NoError(t, err)
+	require.NoError(t, err)
+	_, err = conn.Exec(ctx, query, params...)
+	require.NoError(t, err)
 }
 
 func (d *TestDB) Conn(t *testing.T, ctx context.Context) string {
