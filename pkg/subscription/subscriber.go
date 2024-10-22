@@ -244,6 +244,7 @@ func (s *Subscriber) Sync(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("Error acquiring replication connection: %w", err)
 	}
+	defer sourceConn.Close(ctx)
 
 	err = s.startReplication(ctx, sourceConn)
 	if err != nil {
@@ -254,6 +255,7 @@ func (s *Subscriber) Sync(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("Error creating apply connection: %w", err)
 	}
+	defer applyConn.Close(ctx)
 
 	// Start the apply worker
 	err = StartApply(ctx, sourceConn, applyConn, 0)
