@@ -2,11 +2,9 @@ package e2e
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
 	"github.com/timescale/timescaledb-cdc/pkg/entry"
@@ -42,48 +40,30 @@ func TestCatalogPopulation(t *testing.T) {
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
 
-	// Verify the catalog is populated with right state.
-	catalogCheck := func(subname, schema, table string, expectedExists bool) {
-		var exists bool
-		err := dbs.target.QueryRow(t, ctx,
-			`SELECT true FROM _timescaledb_cdc.subscription_rel WHERE subname=$1
-		AND schemaname=$2 AND tablename=$3 AND state='i'`,
-			subname, schema, table).Scan(&exists)
-		errMsg := fmt.Sprintf("Failed for subname %s schema %s table %s expected %t",
-			subname, schema, table, expectedExists)
-		if !expectedExists {
-			require.ErrorIs(t, err, pgx.ErrNoRows, errMsg)
-		}
-		require.Equal(t, expectedExists, exists, errMsg)
-	}
+	sourceAssert := NewDBAssert("source", dbs.source, t, ctx)
+	targetAssert := NewDBAssert("target", dbs.target, t, ctx)
 
-	for _, t := range []struct {
-		subname string
-		schema  string
-		table   string
-		exists  bool
-	}{
+	rels := []SubscriptionRel{
 		{
-			subname: "sub",
-			schema:  "public",
-			table:   "metrics",
-			exists:  true,
+			SubName: "sub",
+			Schema:  "public",
+			Table:   "metrics",
+			Exists:  true,
 		},
 		{
-			subname: "sub",
-			schema:  "public",
-			table:   "metrics1",
-			exists:  true,
+			SubName: "sub",
+			Schema:  "public",
+			Table:   "metrics1",
+			Exists:  true,
 		},
 		{
-			subname: "sub",
-			schema:  "public",
-			table:   "metrics2",
-			exists:  false,
+			SubName: "sub",
+			Schema:  "public",
+			Table:   "metrics2",
+			Exists:  false,
 		},
-	} {
-		catalogCheck(t.subname, t.schema, t.table, t.exists)
 	}
+	targetAssert.SubscriptionHasRelations(rels)
 
 	// Add metrics2, remove metrics
 	dbs.source.Exec(t, ctx, `ALTER PUBLICATION pub ADD TABLE metrics2`)
@@ -97,48 +77,30 @@ func TestCatalogPopulation(t *testing.T) {
 			subscriptions)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
-	for _, t := range []struct {
-		subname string
-		schema  string
-		table   string
-		exists  bool
-	}{
+	rels = []SubscriptionRel{
 		{
-			subname: "sub",
-			schema:  "public",
-			table:   "metrics",
-			exists:  false,
+			SubName: "sub",
+			Schema:  "public",
+			Table:   "metrics",
+			Exists:  false,
 		},
 		{
-			subname: "sub",
-			schema:  "public",
-			table:   "metrics1",
-			exists:  true,
+			SubName: "sub",
+			Schema:  "public",
+			Table:   "metrics1",
+			Exists:  true,
 		},
 		{
-			subname: "sub",
-			schema:  "public",
-			table:   "metrics2",
-			exists:  true,
+			SubName: "sub",
+			Schema:  "public",
+			Table:   "metrics2",
+			Exists:  true,
 		},
-	} {
-		catalogCheck(t.subname, t.schema, t.table, t.exists)
 	}
+	targetAssert.SubscriptionHasRelations(rels)
 
-	var exists bool
-	// Verify the existence of replication slot on source
-	err := dbs.source.QueryRow(t, ctx,
-		`SELECT true FROM pg_stat_replication_slots
-		 WHERE slot_name=$1`, "sub").Scan(&exists)
-	require.NoError(t, err)
-	require.True(t, exists)
-
-	// Verify the existence of replication origin on target
-	err = dbs.target.QueryRow(t, ctx,
-		`SELECT true FROM pg_replication_origin
-		 WHERE roname=$1`, "sub").Scan(&exists)
-	require.NoError(t, err)
-	require.True(t, exists)
+	sourceAssert.HasReplicationSlot("sub")
+	targetAssert.HasReplicationOrigin("sub")
 
 	{
 		// Launching again shouldn't cause error

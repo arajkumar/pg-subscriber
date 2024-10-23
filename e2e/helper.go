@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -18,6 +19,14 @@ type TestDB struct {
 type TestDBS struct {
 	source *TestDB
 	target *TestDB
+}
+
+type DBAssert struct {
+	*TestDB
+	name string
+	t    *testing.T
+	ctx  context.Context
+	conn *pgx.Conn
 }
 
 func prepareDBS(t *testing.T, ctx context.Context) TestDBS {
@@ -94,4 +103,63 @@ func (d *TestDB) Conn(t *testing.T, ctx context.Context) string {
 func (d *TestDBS) Exec(t *testing.T, ctx context.Context, query string, params ...interface{}) {
 	d.source.Exec(t, ctx, query, params...)
 	d.target.Exec(t, ctx, query, params...)
+}
+
+func NewDBAssert(name string, db *TestDB, t *testing.T, ctx context.Context) DBAssert {
+	dbURL, err := db.container.ConnectionString(ctx)
+	require.NoError(t, err)
+
+	conn, err := pgx.Connect(ctx, dbURL)
+	require.NoError(t, err)
+
+	return DBAssert{
+		TestDB: db,
+		name:   name,
+		t:      t,
+		ctx:    ctx,
+		conn:   conn,
+	}
+}
+
+func (d *DBAssert) HasReplicationSlot(slot string) {
+	var exists bool
+	// Verify the existence of replication slot on source
+	err := d.TestDB.QueryRow(d.t, d.ctx,
+		`SELECT true FROM pg_stat_replication_slots
+		 WHERE slot_name=$1`, slot).Scan(&exists)
+	require.NoError(d.t, err)
+	require.True(d.t, exists)
+}
+
+func (d *DBAssert) HasReplicationOrigin(origin string) {
+	var exists bool
+	// Verify the existence of replication slot on source
+	err := d.TestDB.QueryRow(d.t, d.ctx,
+		`SELECT true FROM pg_replication_origin
+		 WHERE roname=$1`, origin).Scan(&exists)
+	require.NoError(d.t, err)
+	require.True(d.t, exists)
+}
+
+type SubscriptionRel struct {
+	SubName string
+	Schema  string
+	Table   string
+	Exists  bool
+}
+
+func (d *DBAssert) SubscriptionHasRelations(rels []SubscriptionRel) {
+	for _, r := range rels {
+		var exists bool
+		err := d.TestDB.QueryRow(d.t, d.ctx,
+			`SELECT true FROM _timescaledb_cdc.subscription_rel WHERE subname=$1
+		AND schemaname=$2 AND tablename=$3 AND state='i'`,
+			r.SubName, r.Schema, r.Table).Scan(&exists)
+		errMsg := fmt.Sprintf("subname:%s schema:%s:table %s expected:%t",
+			r.SubName, r.Schema, r.Table, r.Exists)
+		if !r.Exists {
+			require.ErrorIs(d.t, err, pgx.ErrNoRows, errMsg)
+		}
+		require.Equal(d.t, r.Exists, exists, errMsg)
+	}
 }
