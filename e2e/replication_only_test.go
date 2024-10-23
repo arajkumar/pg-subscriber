@@ -33,6 +33,8 @@ func TestCatalogPopulation(t *testing.T) {
 	sourceAssert := NewDBAssert("source", dbs.source, t, ctx)
 	targetAssert := NewDBAssert("target", dbs.target, t, ctx)
 
+	sourceAssert.HasPublicationRelsCount("pub", 2)
+
 	{
 		// This should be pretty quick. It also creates replication slot
 		// on the source, replication origin on target.
@@ -103,9 +105,6 @@ func TestCatalogPopulation(t *testing.T) {
 	targetAssert.SubscriptionHasRels(rels)
 	targetAssert.HasSubsciptionRelsCount("sub", 2)
 
-	sourceAssert.HasReplicationSlot("sub")
-	targetAssert.HasReplicationOrigin("sub")
-
 	{
 		// Launching again shouldn't cause error
 		ctx, _ := context.WithTimeout(ctx, 1*time.Second)
@@ -119,6 +118,9 @@ func TestCatalogPopulation(t *testing.T) {
 func TestReplicationSlotAndOriginExistence(t *testing.T) {
 	ctx := context.TODO()
 	dbs := prepareDBS(t, ctx)
+
+	sourceAssert := NewDBAssert("source", dbs.source, t, ctx)
+	targetAssert := NewDBAssert("target", dbs.target, t, ctx)
 
 	ddl := `
 	CREATE TABLE metrics (id integer, time timestamptz, name text, value numeric);
@@ -143,20 +145,8 @@ func TestReplicationSlotAndOriginExistence(t *testing.T) {
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
 
-	var exists bool
-	// Verify the existence of replication slot on source
-	err := dbs.source.QueryRow(t, ctx,
-		`SELECT true FROM pg_stat_replication_slots
-		 WHERE slot_name=$1`, "sub").Scan(&exists)
-	require.NoError(t, err)
-	require.True(t, exists)
-
-	// Verify the existence of replication origin on target
-	err = dbs.target.QueryRow(t, ctx,
-		`SELECT true FROM pg_replication_origin
-		 WHERE roname=$1`, "sub").Scan(&exists)
-	require.NoError(t, err)
-	require.True(t, exists)
+	sourceAssert.HasReplicationSlot("sub")
+	targetAssert.HasReplicationOrigin("sub")
 
 	{
 		// Launching again shouldn't cause error
@@ -187,6 +177,12 @@ func TestLiveReplicationWithoutExistingData(t *testing.T) {
 		"sub",
 	}
 
+	sourceAssert := NewDBAssert("source", dbs.source, t, ctx)
+	targetAssert := NewDBAssert("target", dbs.target, t, ctx)
+
+	sourceAssert.HasTableCount("metrics", 0)
+	targetAssert.HasTableCount("metrics", 0)
+
 	{
 		// This should be pretty quick. It also creates replication slot
 		// on the source, replication origin on target.
@@ -196,4 +192,25 @@ func TestLiveReplicationWithoutExistingData(t *testing.T) {
 			subscriptions)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
+
+	insert := `
+		INSERT INTO metrics(id, time, name, value)
+		SELECT random(), time, 'metric_' || random(), random() FROM
+		generate_series('2024-01-01 00:00:00', '2024-01-31 23:00:00', INTERVAL'1 hour') as time LIMIT 10;
+		`
+	dbs.source.Exec(t, ctx, insert)
+
+	sourceAssert.HasTableCount("metrics", 10)
+
+	{
+		// This should be pretty quick. It also creates replication slot
+		// on the source, replication origin on target.
+		ctx, _ := context.WithTimeout(ctx, 10*time.Second)
+		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
+			publications,
+			subscriptions)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	}
+
+	targetAssert.HasTableCount("metrics", 10)
 }

@@ -151,31 +151,46 @@ type SubscriptionRel struct {
 func (d *DBAssert) SubscriptionHasRels(rels []SubscriptionRel) {
 	for _, r := range rels {
 		var exists bool
-		err := d.TestDB.QueryRow(d.t, d.ctx,
-			`SELECT true FROM _timescaledb_cdc.subscription_rel WHERE subname=$1
-		AND schemaname=$2 AND tablename=$3 AND state='i'`,
+		q := `SELECT true FROM _timescaledb_cdc.subscription_rel WHERE subname=$1
+		AND schemaname=$2 AND tablename=$3 AND state='i'`
+		d.t.Log("query", q, "subname", r.SubName, "schema",
+			r.Schema, "table", r.Table, "exists", r.Exists)
+		err := d.TestDB.QueryRow(d.t, d.ctx, q,
 			r.SubName, r.Schema, r.Table).Scan(&exists)
-		errMsg := fmt.Sprintf("subname:%s schema:%s:table %s expected:%t",
-			r.SubName, r.Schema, r.Table, r.Exists)
+
 		if !r.Exists {
-			require.ErrorIs(d.t, err, pgx.ErrNoRows, errMsg)
+			require.ErrorIs(d.t, err, pgx.ErrNoRows)
 		} else {
-			require.NoError(d.t, err, errMsg)
+			require.NoError(d.t, err)
 		}
-		require.Equal(d.t, r.Exists, exists, errMsg)
+		require.Equal(d.t, r.Exists, exists)
 	}
 }
 
 func (d *DBAssert) HasTableCount(rel string, expectedCount int) {
 	q := fmt.Sprintf(`SELECT count(*) FROM %s`, rel)
+	d.t.Log("query", q)
+
 	var count int
 	err := d.TestDB.QueryRow(d.t, d.ctx, q).Scan(&count)
 	require.NoError(d.t, err)
 	require.Equal(d.t, expectedCount, count)
 }
 
+func (d *DBAssert) HasPublicationRelsCount(pubname string, expectedCount int) {
+	q := `SELECT count(*) FROM pg_publication_tables WHERE pubname=$1`
+	d.t.Log("query", q, "pubname", pubname)
+
+	var count int
+	err := d.TestDB.QueryRow(d.t, d.ctx, q, pubname).Scan(&count)
+	require.NoError(d.t, err)
+	require.Equal(d.t, expectedCount, count)
+}
+
 func (d *DBAssert) HasSubsciptionRelsCount(subname string, expectedCount int) {
 	q := `SELECT count(*) FROM _timescaledb_cdc.subscription_rel WHERE subname=$1`
+	d.t.Log("query", q, "subname", subname)
+
 	var count int
 	err := d.TestDB.QueryRow(d.t, d.ctx, q, subname).Scan(&count)
 	require.NoError(d.t, err)

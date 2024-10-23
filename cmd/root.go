@@ -24,25 +24,30 @@ var rootCmd = &cobra.Command{
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	debug := rootCmd.PersistentFlags().Lookup("debug").Changed
 	var logger *zap.Logger
-	var err error
+	var undo func()
 
-	if debug {
-		logger, err = zap.NewDevelopment()
-	} else {
-		logger, err = zap.NewProduction()
+	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
+		debug := rootCmd.PersistentFlags().Lookup("debug").Changed
+		var err error
+
+		if debug {
+			logger, err = zap.NewDevelopment()
+		} else {
+			logger, err = zap.NewProduction()
+		}
+		if err != nil {
+			panic(err)
+		}
+		undo = zap.ReplaceGlobals(logger)
 	}
-	if err != nil {
-		panic(err)
-	}
 
-	defer logger.Sync()
+	defer func() {
+		logger.Sync()
+		undo()
+	}()
 
-	undo := zap.ReplaceGlobals(logger)
-	defer undo()
-
-	err = rootCmd.Execute()
+	err := rootCmd.Execute()
 	if err != nil {
 		os.Exit(1)
 	}
