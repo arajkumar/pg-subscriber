@@ -30,6 +30,9 @@ func TestCatalogPopulation(t *testing.T) {
 		"sub",
 	}
 
+	sourceAssert := NewDBAssert("source", dbs.source, t, ctx)
+	targetAssert := NewDBAssert("target", dbs.target, t, ctx)
+
 	{
 		// This should be pretty quick. It also creates replication slot
 		// on the source, replication origin on target.
@@ -39,9 +42,6 @@ func TestCatalogPopulation(t *testing.T) {
 			subscriptions)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
-
-	sourceAssert := NewDBAssert("source", dbs.source, t, ctx)
-	targetAssert := NewDBAssert("target", dbs.target, t, ctx)
 
 	rels := []SubscriptionRel{
 		{
@@ -63,7 +63,9 @@ func TestCatalogPopulation(t *testing.T) {
 			Exists:  false,
 		},
 	}
-	targetAssert.SubscriptionHasRelations(rels)
+
+	targetAssert.SubscriptionHasRels(rels)
+	targetAssert.HasSubsciptionRelsCount("sub", 2)
 
 	// Add metrics2, remove metrics
 	dbs.source.Exec(t, ctx, `ALTER PUBLICATION pub ADD TABLE metrics2`)
@@ -97,7 +99,9 @@ func TestCatalogPopulation(t *testing.T) {
 			Exists:  true,
 		},
 	}
-	targetAssert.SubscriptionHasRelations(rels)
+
+	targetAssert.SubscriptionHasRels(rels)
+	targetAssert.HasSubsciptionRelsCount("sub", 2)
 
 	sourceAssert.HasReplicationSlot("sub")
 	targetAssert.HasReplicationOrigin("sub")
@@ -192,12 +196,4 @@ func TestLiveReplicationWithoutExistingData(t *testing.T) {
 			subscriptions)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
-
-	var exists bool
-	dbs.target.QueryRow(t, ctx,
-		`SELECT true FROM _timescaledb_cdc.subscription_rel WHERE subname=$1
-		 AND schemaname=$2 AND tablename=$3`,
-		"sub", "public", "metrics").Scan(&exists)
-
-	require.True(t, exists)
 }

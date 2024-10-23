@@ -148,7 +148,7 @@ type SubscriptionRel struct {
 	Exists  bool
 }
 
-func (d *DBAssert) SubscriptionHasRelations(rels []SubscriptionRel) {
+func (d *DBAssert) SubscriptionHasRels(rels []SubscriptionRel) {
 	for _, r := range rels {
 		var exists bool
 		err := d.TestDB.QueryRow(d.t, d.ctx,
@@ -159,7 +159,25 @@ func (d *DBAssert) SubscriptionHasRelations(rels []SubscriptionRel) {
 			r.SubName, r.Schema, r.Table, r.Exists)
 		if !r.Exists {
 			require.ErrorIs(d.t, err, pgx.ErrNoRows, errMsg)
+		} else {
+			require.NoError(d.t, err, errMsg)
 		}
 		require.Equal(d.t, r.Exists, exists, errMsg)
 	}
+}
+
+func (d *DBAssert) HasTableCount(rel string, expectedCount int) {
+	q := fmt.Sprintf(`SELECT count(*) FROM %s`, rel)
+	var count int
+	err := d.TestDB.QueryRow(d.t, d.ctx, q).Scan(&count)
+	require.NoError(d.t, err)
+	require.Equal(d.t, expectedCount, count)
+}
+
+func (d *DBAssert) HasSubsciptionRelsCount(subname string, expectedCount int) {
+	q := `SELECT count(*) FROM _timescaledb_cdc.subscription_rel WHERE subname=$1`
+	var count int
+	err := d.TestDB.QueryRow(d.t, d.ctx, q, subname).Scan(&count)
+	require.NoError(d.t, err)
+	require.Equal(d.t, expectedCount, count)
 }
