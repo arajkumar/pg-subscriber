@@ -38,10 +38,11 @@ func TestCatalogPopulation(t *testing.T) {
 	{
 		// This should be pretty quick. It also creates replication slot
 		// on the source, replication origin on target.
-		ctx, _ := context.WithTimeout(ctx, 2*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
 			subscriptions)
+		cancel()
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
 
@@ -75,10 +76,11 @@ func TestCatalogPopulation(t *testing.T) {
 
 	{
 		// Run again to auto refresh catalog
-		ctx, _ := context.WithTimeout(ctx, 2*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
 			subscriptions)
+		cancel()
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
 	rels = []SubscriptionRel{
@@ -107,10 +109,11 @@ func TestCatalogPopulation(t *testing.T) {
 
 	{
 		// Launching again shouldn't cause error
-		ctx, _ := context.WithTimeout(ctx, 1*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
 			subscriptions)
+		cancel()
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
 }
@@ -138,10 +141,11 @@ func TestReplicationSlotAndOriginExistence(t *testing.T) {
 	{
 		// This should be pretty quick. It also creates replication slot
 		// on the source, replication origin on target.
-		ctx, _ := context.WithTimeout(ctx, 2*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
 			subscriptions)
+		cancel()
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
 
@@ -150,10 +154,11 @@ func TestReplicationSlotAndOriginExistence(t *testing.T) {
 
 	{
 		// Launching again shouldn't cause error
-		ctx, _ := context.WithTimeout(ctx, 1*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
 			subscriptions)
+		cancel()
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
 }
@@ -165,7 +170,9 @@ func TestLiveReplicationWithoutExistingData(t *testing.T) {
 	dbs := prepareDBS(t, ctx)
 
 	ddl := `
-	CREATE TABLE metrics (id integer, time timestamptz, name text, value numeric);
+	CREATE TABLE metrics (id INTEGER, time TIMESTAMPTZ, name TEXT, value NUMERIC,
+		PRIMARY KEY(id, time)
+	);
 	CREATE PUBLICATION pub FOR TABLE metrics;
 	`
 	dbs.Exec(t, ctx, ddl)
@@ -186,10 +193,11 @@ func TestLiveReplicationWithoutExistingData(t *testing.T) {
 	{
 		// This should be pretty quick. It also creates replication slot
 		// on the source, replication origin on target.
-		ctx, _ := context.WithTimeout(ctx, 2*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
 			subscriptions)
+		cancel()
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
 
@@ -209,12 +217,26 @@ func TestLiveReplicationWithoutExistingData(t *testing.T) {
 	{
 		// This should be pretty quick. It also creates replication slot
 		// on the source, replication origin on target.
-		ctx, _ := context.WithTimeout(ctx, 10*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
 			subscriptions)
+		cancel()
 		require.ErrorIs(t, err, context.DeadlineExceeded)
+		targetAssert.HasTableCount("metrics", 10)
 	}
 
-	targetAssert.HasTableCount("metrics", 10)
+	// Run multiple times to check whether the tool is capable of ignoring
+	// already applied txns.
+	for range 3 {
+		// This should be pretty quick. It also creates replication slot
+		// on the source, replication origin on target.
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
+			publications,
+			subscriptions)
+		cancel()
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		targetAssert.HasTableCount("metrics", 10)
+	}
 }
