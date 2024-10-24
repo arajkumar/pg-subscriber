@@ -17,7 +17,7 @@ import (
 )
 
 type applyContext struct {
-	conn           *pgx.Conn
+	conn           *conn.ApplyConn
 	tx             pgx.Tx
 	batch          pgx.Batch
 	lastCommitTime time.Time
@@ -30,6 +30,7 @@ type applyContext struct {
 	typeMap        *pgtype.Map
 	walDataCh      chan []byte
 	errCh          chan error
+	applyLSNCh     chan pglogrepl.LSN
 	g              sync.WaitGroup
 	// This would help us to skip txn which are already applied during
 	// restart. It would be initialized based on the replication origin
@@ -38,9 +39,10 @@ type applyContext struct {
 	reachedStartPos bool
 }
 
-func newApplyCtx(conn *pgx.Conn, lastCommitLSN pglogrepl.LSN) *applyContext {
+func newApplyCtx(conn *conn.ApplyConn, lastCommitLSN pglogrepl.LSN) *applyContext {
 	walDataCh := make(chan []byte, 1024)
 	errCh := make(chan error)
+	applyLSNCh := make(chan pglogrepl.LSN)
 	relations := make(map[uint32]*pglogrepl.RelationMessage)
 	// TODO: Does it make sense to expose as a setting?
 	batchDuration := 2 * time.Second
@@ -54,6 +56,7 @@ func newApplyCtx(conn *pgx.Conn, lastCommitLSN pglogrepl.LSN) *applyContext {
 		typeMap:         pgtype.NewMap(),
 		walDataCh:       walDataCh,
 		errCh:           errCh,
+		applyLSNCh:      applyLSNCh,
 		g:               sync.WaitGroup{},
 		lastCommitLSN:   lastCommitLSN,
 		reachedStartPos: false,
@@ -66,6 +69,7 @@ func (a *applyContext) close() {
 	// Close all channels
 	close(a.errCh)
 	close(a.walDataCh)
+	close(a.applyLSNCh)
 }
 
 func (a *applyContext) queue(q string, args ...interface{}) {
@@ -109,6 +113,15 @@ func (a *applyContext) flush(ctx context.Context) error {
 		zap.L().Debug("commit", zap.Duration("elapsed", time.Since(before)),
 			zap.Int("buflen", a.batch.Len()))
 
+		applyLSN, err := a.conn.OriginProgress(ctx, true)
+		if err != nil {
+			select {
+			case a.applyLSNCh <- applyLSN:
+				//
+			default:
+				//
+			}
+		}
 		a.batch = pgx.Batch{}
 		a.lastCommitTime = time.Now()
 	}
@@ -236,13 +249,12 @@ func (a *applyContext) decodeTextColumnData(data []byte, dataType uint32) (inter
 }
 
 func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.ApplyConn, start pglogrepl.LSN) error {
-	zap.L().Debug("Starting apply", zap.String("lsn", start.String()))
+	zap.L().Info("Starting apply", zap.String("lsn", start.String()))
 
-	clientXLogPos := start
 	standbyMessageTimeout := time.Second * 10
 	nextStandbyMessageDeadline := time.Now().Add(standbyMessageTimeout)
 
-	applyCtx := newApplyCtx(target.Conn, start)
+	applyCtx := newApplyCtx(target, start)
 
 	// Start go routine which processes replication messages in parallel to
 	// the following receive loop.
@@ -250,21 +262,25 @@ func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.Appl
 
 	defer applyCtx.close()
 
+	applyLSN := start
+
 	for {
 		// This breaks the loop upon cancellation
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case applyLSN = <-applyCtx.applyLSNCh:
+			//
 		default:
 		}
 
 		if time.Now().After(nextStandbyMessageDeadline) {
 			// TODO: Send write, flush, apply LSN
-			err := pglogrepl.SendStandbyStatusUpdate(ctx, source.PgConn, pglogrepl.StandbyStatusUpdate{WALWritePosition: clientXLogPos})
+			err := pglogrepl.SendStandbyStatusUpdate(ctx, source.PgConn, pglogrepl.StandbyStatusUpdate{WALWritePosition: applyLSN})
 			if err != nil {
 				return fmt.Errorf("Error during send status update: %w", err)
 			}
-			zap.L().Debug("Standby update", zap.String("pos", clientXLogPos.String()))
+			zap.L().Debug("Standby update", zap.String("pos", applyLSN.String()))
 			nextStandbyMessageDeadline = time.Now().Add(standbyMessageTimeout)
 		}
 
@@ -300,10 +316,6 @@ func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.Appl
 				zap.String("ServerTime", pkm.ServerTime.String()),
 				zap.Bool("ReplyRequested", pkm.ReplyRequested))
 
-			if pkm.ServerWALEnd > clientXLogPos {
-				clientXLogPos = pkm.ServerWALEnd
-			}
-
 			if pkm.ReplyRequested {
 				nextStandbyMessageDeadline = time.Time{}
 			}
@@ -321,10 +333,6 @@ func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.Appl
 			err = applyCtx.processV1(xld.WALData)
 			if err != nil {
 				return fmt.Errorf("Error on apply: %w", err)
-			}
-
-			if xld.WALStart > clientXLogPos {
-				clientXLogPos = xld.WALStart
 			}
 		}
 	}

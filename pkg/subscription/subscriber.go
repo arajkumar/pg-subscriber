@@ -231,7 +231,7 @@ func (s *Subscriber) startReplication(ctx context.Context, sourceConn *conn.Rece
 }
 
 func (s *Subscriber) Sync(ctx context.Context) error {
-	zap.L().Debug("Starting subscriber", zap.String("name", s.name))
+	zap.L().Info("Starting subscriber", zap.String("name", s.name))
 	// Refresh the subscription
 	err := s.refresh(ctx)
 	if err != nil {
