@@ -148,8 +148,95 @@ func (a *applyContext) spawnApplier(ctx context.Context) {
 	}()
 }
 
+func (a *applyContext) processV1(walData []byte) error {
+	// TODO: Use buffer pool to avoid repeated allocation
+	walDataCp := make([]byte, len(walData))
+	copy(walDataCp, walData)
+	select {
+	case a.walDataCh <- walDataCp:
+		// pass
+	case err := <-a.errCh:
+		return err
+	}
+	return nil
+}
+
+func (a *applyContext) applyV1(walData []byte) error {
+	logicalMsg, err := pglogrepl.Parse(walData)
+	if err != nil {
+		return fmt.Errorf("Error on v1 parse: %w", err)
+	}
+
+	switch logicalMsg := logicalMsg.(type) {
+	case *pglogrepl.RelationMessage:
+		a.relations[logicalMsg.RelationID] = logicalMsg
+
+	case *pglogrepl.BeginMessage:
+		// Indicates the beginning of a group of changes in a transaction. This is only sent for committed transactions. You won't get any events from rolled back transactions.
+		a.begin(logicalMsg.FinalLSN)
+
+	case *pglogrepl.CommitMessage:
+		a.commit(logicalMsg.CommitLSN, logicalMsg.CommitTime)
+
+	case *pglogrepl.InsertMessage:
+		rel, ok := a.relations[logicalMsg.RelationID]
+		if !ok {
+			return fmt.Errorf("Unknown relation ID %d", logicalMsg.RelationID)
+		}
+
+		query := fmt.Sprintf("INSERT INTO %s(", pgx.Identifier{rel.Namespace, rel.RelationName}.Sanitize())
+
+		vals := []interface{}{}
+		for idx, col := range logicalMsg.Tuple.Columns {
+			colName := pgx.Identifier{rel.Columns[idx].Name}.Sanitize()
+
+			if idx == 0 {
+				query += colName
+			} else {
+				query += ", " + colName
+			}
+
+			switch col.DataType {
+			case 'n': // null
+				vals = append(vals, nil)
+			case 'u': // unchanged toast
+				// This TOAST value was not changed. TOAST values are not stored in the tuple, and logical replication doesn't want to spend a disk read to fetch its value for you.
+			case 't': //text
+				val, err := a.decodeTextColumnData(col.Data, rel.Columns[idx].DataType)
+				if err != nil {
+					return fmt.Errorf("error decoding column data: %w", err)
+				}
+				vals = append(vals, val)
+			}
+		}
+		query += ") overriding system value VALUES("
+		for idx := range logicalMsg.Tuple.Columns {
+			if idx == 0 {
+				query += fmt.Sprintf("$%d", idx+1)
+			} else {
+				query += fmt.Sprintf(", $%d", idx+1)
+			}
+		}
+		query += ")"
+		a.queue(query, vals...)
+
+	case *pglogrepl.TruncateMessage:
+		//
+	default:
+		zap.L().Panic("Unknown message type", zap.Reflect("msg", logicalMsg))
+	}
+	return nil
+}
+
+func (a *applyContext) decodeTextColumnData(data []byte, dataType uint32) (interface{}, error) {
+	if dt, ok := a.typeMap.TypeForOID(dataType); ok {
+		return dt.Codec.DecodeValue(a.typeMap, dataType, pgtype.TextFormatCode, data)
+	}
+	return string(data), nil
+}
+
 func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.ApplyConn, start pglogrepl.LSN) error {
-	zap.L().Debug("Starting apply")
+	zap.L().Debug("Starting apply", zap.String("lsn", start.String()))
 
 	clientXLogPos := start
 	standbyMessageTimeout := time.Second * 10
@@ -241,91 +328,4 @@ func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.Appl
 			}
 		}
 	}
-}
-
-func (a *applyContext) processV1(walData []byte) error {
-	// TODO: Use buffer pool to avoid repeated allocation
-	walDataCp := make([]byte, len(walData))
-	copy(walDataCp, walData)
-	select {
-	case a.walDataCh <- walDataCp:
-		// pass
-	case err := <-a.errCh:
-		return err
-	}
-	return nil
-}
-
-func (a *applyContext) applyV1(walData []byte) error {
-	logicalMsg, err := pglogrepl.Parse(walData)
-	if err != nil {
-		return fmt.Errorf("Error on v1 parse: %w", err)
-	}
-
-	switch logicalMsg := logicalMsg.(type) {
-	case *pglogrepl.RelationMessage:
-		a.relations[logicalMsg.RelationID] = logicalMsg
-
-	case *pglogrepl.BeginMessage:
-		// Indicates the beginning of a group of changes in a transaction. This is only sent for committed transactions. You won't get any events from rolled back transactions.
-		a.begin(logicalMsg.FinalLSN)
-
-	case *pglogrepl.CommitMessage:
-		a.commit(logicalMsg.CommitLSN, logicalMsg.CommitTime)
-
-	case *pglogrepl.InsertMessage:
-		rel, ok := a.relations[logicalMsg.RelationID]
-		if !ok {
-			return fmt.Errorf("unknown relation ID %d", logicalMsg.RelationID)
-		}
-
-		query := fmt.Sprintf("INSERT INTO %s(", pgx.Identifier{rel.Namespace, rel.RelationName}.Sanitize())
-
-		vals := []interface{}{}
-		for idx, col := range logicalMsg.Tuple.Columns {
-			colName := pgx.Identifier{rel.Columns[idx].Name}.Sanitize()
-
-			if idx == 0 {
-				query += colName
-			} else {
-				query += ", " + colName
-			}
-
-			switch col.DataType {
-			case 'n': // null
-				vals = append(vals, nil)
-			case 'u': // unchanged toast
-				// This TOAST value was not changed. TOAST values are not stored in the tuple, and logical replication doesn't want to spend a disk read to fetch its value for you.
-			case 't': //text
-				val, err := a.decodeTextColumnData(col.Data, rel.Columns[idx].DataType)
-				if err != nil {
-					return fmt.Errorf("error decoding column data: %w", err)
-				}
-				vals = append(vals, val)
-			}
-		}
-		query += ") overriding system value VALUES("
-		for idx := range logicalMsg.Tuple.Columns {
-			if idx == 0 {
-				query += fmt.Sprintf("$%d", idx+1)
-			} else {
-				query += fmt.Sprintf(", $%d", idx+1)
-			}
-		}
-		query += ")"
-		a.queue(query, vals...)
-
-	case *pglogrepl.TruncateMessage:
-		//
-	default:
-		zap.L().Panic("Unknown message type", zap.Reflect("msg", logicalMsg))
-	}
-	return nil
-}
-
-func (a *applyContext) decodeTextColumnData(data []byte, dataType uint32) (interface{}, error) {
-	if dt, ok := a.typeMap.TypeForOID(dataType); ok {
-		return dt.Codec.DecodeValue(a.typeMap, dataType, pgtype.TextFormatCode, data)
-	}
-	return string(data), nil
 }
