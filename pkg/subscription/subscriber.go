@@ -178,7 +178,7 @@ func (s *Subscriber) refresh(ctx context.Context) error {
 	return err
 }
 
-func (s *Subscriber) startReplication(ctx context.Context, sourceConn *conn.ReceiveConn) error {
+func (s *Subscriber) startReplication(ctx context.Context, sourceConn *conn.ReceiveConn, start pglogrepl.LSN) error {
 	sysident, err := pglogrepl.IdentifySystem(ctx, sourceConn.PgConn)
 	if err != nil {
 		return fmt.Errorf("Error identifying system: %w", err)
@@ -221,7 +221,7 @@ func (s *Subscriber) startReplication(ctx context.Context, sourceConn *conn.Rece
 		PluginArgs: pluginArguments,
 		Mode:       pglogrepl.LogicalReplication,
 	}
-	err = pglogrepl.StartReplication(ctx, sourceConn.PgConn, slotName, sysident.XLogPos, opts)
+	err = pglogrepl.StartReplication(ctx, sourceConn.PgConn, slotName, start, opts)
 	if err != nil {
 		return fmt.Errorf("Error starting replication: %w", err)
 	}
@@ -246,18 +246,23 @@ func (s *Subscriber) Sync(ctx context.Context) error {
 	}
 	defer sourceConn.Close(ctx)
 
-	err = s.startReplication(ctx, sourceConn)
-	if err != nil {
-		return fmt.Errorf("Error starting replication: %w", err)
-	}
-
 	applyConn, err := s.target.ApplyConn(ctx, s.name)
 	if err != nil {
 		return fmt.Errorf("Error creating apply connection: %w", err)
 	}
 	defer applyConn.Close(ctx)
 
+	start, err := applyConn.OriginProgress(ctx, false)
+	if err != nil {
+		return fmt.Errorf("Error on replication origin progress: %w", err)
+	}
+
+	err = s.startReplication(ctx, sourceConn, start)
+	if err != nil {
+		return fmt.Errorf("Error starting replication: %w", err)
+	}
+
 	// Start the apply worker
-	err = StartApply(ctx, sourceConn, applyConn, 0)
+	err = StartApply(ctx, sourceConn, applyConn, start)
 	return err
 }

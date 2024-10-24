@@ -193,6 +193,10 @@ func TestLiveReplicationWithoutExistingData(t *testing.T) {
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	}
 
+	sourceAssert.HasPublicationRelsCount("pub", 1)
+	sourceAssert.HasReplicationSlot("sub")
+	targetAssert.HasReplicationOrigin("sub")
+
 	insert := `
 		INSERT INTO metrics(id, time, name, value)
 		SELECT random(), time, 'metric_' || random(), random() FROM

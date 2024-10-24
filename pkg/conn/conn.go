@@ -93,24 +93,39 @@ func (t *Target) ApplyConn(ctx context.Context, origin string) (*ApplyConn, erro
 		}
 	}()
 
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("Error on replication origin create txn: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
 	// create origin if not exists
 	q := `SELECT * FROM pg_replication_origin WHERE roname = $1`
-	row := conn.QueryRow(ctx, q, origin)
+	row := tx.QueryRow(ctx, q, origin)
 	var originID uint64
 	err = row.Scan(&originID)
 	if err == pgx.ErrNoRows {
 		q := `SELECT pg_replication_origin_create($1)`
-		_, err = conn.Exec(context.Background(), q, origin)
+		_, err = tx.Exec(context.Background(), q, origin)
 		if err != nil {
 			return nil, fmt.Errorf("Error on replication origin create: %w", err)
 		}
 	}
 
 	q = `SELECT pg_replication_origin_session_setup($1)`
-	_, err = conn.Exec(context.Background(), q, origin)
+	_, err = tx.Exec(context.Background(), q, origin)
 	if err != nil {
 		return nil, fmt.Errorf("Error on replication origin setup: %w", err)
 	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("Error on replication origin commit txn: %w", err)
+	}
+
 	return &ApplyConn{
 		Target: t,
 		Conn:   conn,
@@ -124,10 +139,18 @@ func (t *ApplyConn) OriginProgress(ctx context.Context, flush bool) (lsn pglogre
 		panic("Target Replication is not initialized")
 	}
 
+	// Origin progress will return a nil value if it is queried right after
+	// it's creation. Use pointer to get it's value and reference incase if it
+	// a non nil pointer.
+	var lsnP *pglogrepl.LSN
 	q := `SELECT pg_replication_origin_progress($1, $2)`
-	err = conn.QueryRow(ctx, q, t.origin, flush).Scan(&lsn)
+	err = conn.QueryRow(ctx, q, t.origin, flush).Scan(&lsnP)
 	if err != nil {
 		return lsn, fmt.Errorf("Error on replication origin progress: %w", err)
+	}
+
+	if lsnP != nil {
+		lsn = *lsnP
 	}
 
 	return lsn, nil

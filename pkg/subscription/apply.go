@@ -3,6 +3,7 @@ package subscription
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pglogrepl"
@@ -24,33 +25,61 @@ type applyContext struct {
 	commitTime     time.Time
 	txnInProgress  bool
 	timer          *time.Timer
+	batchDuration  time.Duration
 	relations      map[uint32]*pglogrepl.RelationMessage
 	typeMap        *pgtype.Map
 	walDataCh      chan []byte
 	errCh          chan error
+	g              sync.WaitGroup
+	// This would help us to skip txn which are already applied during
+	// restart. It would be initialized based on the replication origin
+	// progress and updated on each successful commit.
+	lastCommitLSN   pglogrepl.LSN
+	reachedStartPos bool
 }
 
-func newApplyCtx(conn *pgx.Conn) *applyContext {
+func newApplyCtx(conn *pgx.Conn, lastCommitLSN pglogrepl.LSN) *applyContext {
 	walDataCh := make(chan []byte, 1024)
 	errCh := make(chan error)
 	relations := make(map[uint32]*pglogrepl.RelationMessage)
+	// TODO: Does it make sense to expose as a setting?
+	batchDuration := 2 * time.Second
 
 	return &applyContext{
-		conn:           conn,
-		lastCommitTime: time.Now(),
-		timer:          time.NewTimer(2 * time.Second),
-		relations:      relations,
-		typeMap:        pgtype.NewMap(),
-		walDataCh:      walDataCh,
-		errCh:          errCh,
+		conn:            conn,
+		lastCommitTime:  time.Now(),
+		timer:           time.NewTimer(batchDuration),
+		batchDuration:   batchDuration,
+		relations:       relations,
+		typeMap:         pgtype.NewMap(),
+		walDataCh:       walDataCh,
+		errCh:           errCh,
+		g:               sync.WaitGroup{},
+		lastCommitLSN:   lastCommitLSN,
+		reachedStartPos: false,
 	}
 }
 
-func (a *applyContext) queue(q string, args ...interface{}) {
-	a.batch.Queue(q, args...)
+func (a *applyContext) close() {
+	// Wait for apply go routine to complete.
+	a.g.Wait()
+	// Close all channels
+	close(a.errCh)
+	close(a.walDataCh)
 }
 
-func (a *applyContext) begin() {
+func (a *applyContext) queue(q string, args ...interface{}) {
+	if a.reachedStartPos {
+		a.batch.Queue(q, args...)
+	}
+}
+
+func (a *applyContext) begin(finalLSN pglogrepl.LSN) {
+	a.reachedStartPos = a.lastCommitLSN < finalLSN
+	if !a.reachedStartPos {
+		zap.L().Info("Skipping", zap.String("lastCommitLSN", a.lastCommitLSN.String()),
+			zap.String("finalLSN", finalLSN.String()))
+	}
 	a.txnInProgress = true
 	a.timer.Stop()
 }
@@ -59,45 +88,61 @@ func (a *applyContext) commit(commitLSN pglogrepl.LSN, commitTime time.Time) {
 	a.commitLSN = commitLSN
 	a.commitTime = commitTime
 	a.txnInProgress = false
-	if time.Since(a.lastCommitTime) > 2*time.Second {
+	if time.Since(a.lastCommitTime) > a.batchDuration {
 		a.flush(context.Background())
 	} else {
-		a.timer.Reset(2 * time.Second)
+		a.timer.Reset(a.batchDuration)
 	}
 }
 
-func (a *applyContext) flush(ctx context.Context) {
-	if a.batch.Len() == 0 {
-		return
+func (a *applyContext) flush(ctx context.Context) error {
+	if a.batch.Len() > 0 {
+		q := `select pg_replication_origin_xact_setup($1, $2)`
+		a.batch.Queue(q, a.commitLSN, a.commitTime)
+		before := time.Now()
+
+		err := a.conn.SendBatch(ctx, &a.batch).Close()
+		if err != nil {
+			return fmt.Errorf("failed to apply batch: %w", err)
+		}
+
+		zap.L().Debug("commit", zap.Duration("elapsed", time.Since(before)),
+			zap.Int("buflen", a.batch.Len()))
+
+		a.batch = pgx.Batch{}
+		a.lastCommitTime = time.Now()
 	}
-	q := `select pg_replication_origin_xact_setup($1, $2)`
-	a.batch.Queue(q, a.commitLSN, a.commitTime)
-	before := time.Now()
-	err := a.conn.SendBatch(ctx, &a.batch).Close()
-	if err != nil {
-		zap.L().Fatal("failed to apply batch: %v", zap.Error(err))
-	}
-	zap.L().Debug("commit", zap.Duration("elapsed", time.Since(before)),
-		zap.Int("buflen", a.batch.Len()))
-	a.batch = pgx.Batch{}
-	a.lastCommitTime = time.Now()
+
+	return nil
 }
 
 func (a *applyContext) spawnApplier(ctx context.Context) {
+	a.g.Add(1)
 	go func() {
+		defer a.g.Done()
+
+		var err error
+		var quit bool
+
 		for {
 			select {
 			case <-a.timer.C:
-				a.flush(ctx)
+				err = a.flush(ctx)
 			case <-ctx.Done():
-				a.flush(ctx)
-				return
+				err, quit = a.flush(ctx), true
 			case walData := <-a.walDataCh:
-				err := a.applyV1(walData)
-				if err != nil {
-					a.errCh <- err
-					return
-				}
+				err = a.applyV1(walData)
+			default:
+				continue
+			}
+
+			if quit {
+				return
+			}
+
+			if err != nil {
+				a.errCh <- err
+				return
 			}
 		}
 	}()
@@ -110,19 +155,19 @@ func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.Appl
 	standbyMessageTimeout := time.Second * 10
 	nextStandbyMessageDeadline := time.Now().Add(standbyMessageTimeout)
 
-	applyCtx := newApplyCtx(target.Conn)
+	applyCtx := newApplyCtx(target.Conn, start)
 
 	// Start go routine which processes replication messages in parallel to
 	// the following receive loop.
 	applyCtx.spawnApplier(ctx)
+
+	defer applyCtx.close()
 
 	for {
 		// This breaks the loop upon cancellation
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case err := <-applyCtx.errCh:
-			return fmt.Errorf("Error on apply :%w", err)
 		default:
 		}
 
@@ -179,14 +224,17 @@ func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.Appl
 		case pglogrepl.XLogDataByteID:
 			xld, err := pglogrepl.ParseXLogData(msg.Data[1:])
 			if err != nil {
-				return fmt.Errorf("ParseXLogData failed:%w", err)
+				return fmt.Errorf("ParseXLogData failed: %w", err)
 			}
 
 			zap.L().Debug("XLogData", zap.String("WALStart", xld.WALStart.String()),
 				zap.String("ServerWALEnd", xld.ServerWALEnd.String()),
 				zap.String("ServerTime", xld.ServerTime.String()))
 
-			applyCtx.processV1(xld.WALData)
+			err = applyCtx.processV1(xld.WALData)
+			if err != nil {
+				return fmt.Errorf("Error on apply: %w", err)
+			}
 
 			if xld.WALStart > clientXLogPos {
 				clientXLogPos = xld.WALStart
@@ -195,11 +243,17 @@ func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.Appl
 	}
 }
 
-func (a *applyContext) processV1(walData []byte) {
+func (a *applyContext) processV1(walData []byte) error {
 	// TODO: Use buffer pool to avoid repeated allocation
 	walDataCp := make([]byte, len(walData))
 	copy(walDataCp, walData)
-	a.walDataCh <- walDataCp
+	select {
+	case a.walDataCh <- walDataCp:
+		// pass
+	case err := <-a.errCh:
+		return err
+	}
+	return nil
 }
 
 func (a *applyContext) applyV1(walData []byte) error {
@@ -214,7 +268,7 @@ func (a *applyContext) applyV1(walData []byte) error {
 
 	case *pglogrepl.BeginMessage:
 		// Indicates the beginning of a group of changes in a transaction. This is only sent for committed transactions. You won't get any events from rolled back transactions.
-		a.begin()
+		a.begin(logicalMsg.FinalLSN)
 
 	case *pglogrepl.CommitMessage:
 		a.commit(logicalMsg.CommitLSN, logicalMsg.CommitTime)
@@ -260,6 +314,9 @@ func (a *applyContext) applyV1(walData []byte) error {
 		}
 		query += ")"
 		a.queue(query, vals...)
+
+	case *pglogrepl.TruncateMessage:
+		//
 	default:
 		zap.L().Panic("Unknown message type", zap.Reflect("msg", logicalMsg))
 	}
