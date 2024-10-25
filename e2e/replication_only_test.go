@@ -3,7 +3,6 @@ package e2e
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -34,16 +33,17 @@ func TestCatalogPopulation(t *testing.T) {
 	targetAssert := NewDBAssert("target", dbs.target, t, ctx)
 
 	sourceAssert.HasPublicationRelsCount("pub", 2)
+	endLSN := dbs.source.WalFlushLSN(t, ctx)
 
 	{
 		// This should be pretty quick. It also creates replication slot
 		// on the source, replication origin on target.
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
-			subscriptions)
-		cancel()
-		require.ErrorIs(t, err, context.DeadlineExceeded)
+			subscriptions,
+			endLSN,
+		)
+		require.NoError(t, err)
 	}
 
 	rels := []SubscriptionRel{
@@ -76,12 +76,10 @@ func TestCatalogPopulation(t *testing.T) {
 
 	{
 		// Run again to auto refresh catalog
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
-			subscriptions)
-		cancel()
-		require.ErrorIs(t, err, context.DeadlineExceeded)
+			subscriptions, 0)
+		require.NoError(t, err)
 	}
 	rels = []SubscriptionRel{
 		{
@@ -109,12 +107,12 @@ func TestCatalogPopulation(t *testing.T) {
 
 	{
 		// Launching again shouldn't cause error
-		ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
-			subscriptions)
-		cancel()
-		require.ErrorIs(t, err, context.DeadlineExceeded)
+			subscriptions,
+			endLSN,
+		)
+		require.NoError(t, err)
 	}
 }
 
@@ -138,15 +136,16 @@ func TestReplicationSlotAndOriginExistence(t *testing.T) {
 		"sub",
 	}
 
+	endLSN := dbs.source.WalFlushLSN(t, ctx)
 	{
 		// This should be pretty quick. It also creates replication slot
 		// on the source, replication origin on target.
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
-			subscriptions)
-		cancel()
-		require.ErrorIs(t, err, context.DeadlineExceeded)
+			subscriptions,
+			endLSN,
+		)
+		require.NoError(t, err)
 	}
 
 	sourceAssert.HasReplicationSlot("sub")
@@ -154,12 +153,12 @@ func TestReplicationSlotAndOriginExistence(t *testing.T) {
 
 	{
 		// Launching again shouldn't cause error
-		ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
-			subscriptions)
-		cancel()
-		require.ErrorIs(t, err, context.DeadlineExceeded)
+			subscriptions,
+			endLSN,
+		)
+		require.NoError(t, err)
 	}
 }
 
@@ -190,15 +189,16 @@ func TestLiveReplicationWithoutExistingData(t *testing.T) {
 	sourceAssert.HasTableCount("metrics", 0)
 	targetAssert.HasTableCount("metrics", 0)
 
+	endLSN := dbs.source.WalFlushLSN(t, ctx)
 	{
 		// This should be pretty quick. It also creates replication slot
 		// on the source, replication origin on target.
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
-			subscriptions)
-		cancel()
-		require.ErrorIs(t, err, context.DeadlineExceeded)
+			subscriptions,
+			endLSN,
+		)
+		require.NoError(t, err)
 	}
 
 	sourceAssert.HasPublicationRelsCount("pub", 1)
@@ -214,15 +214,17 @@ func TestLiveReplicationWithoutExistingData(t *testing.T) {
 
 	sourceAssert.HasTableCount("metrics", 10)
 
+	endLSN = dbs.source.WalFlushLSN(t, ctx)
+
 	{
 		// This should be pretty quick. It also creates replication slot
 		// on the source, replication origin on target.
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
-			subscriptions)
-		cancel()
-		require.ErrorIs(t, err, context.DeadlineExceeded)
+			subscriptions,
+			endLSN,
+		)
+		require.NoError(t, err)
 		targetAssert.HasTableCount("metrics", 10)
 	}
 
@@ -231,12 +233,12 @@ func TestLiveReplicationWithoutExistingData(t *testing.T) {
 	for range 3 {
 		// This should be pretty quick. It also creates replication slot
 		// on the source, replication origin on target.
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		err := entry.Run(ctx, dbs.source.Conn(t, ctx), dbs.target.Conn(t, ctx),
 			publications,
-			subscriptions)
-		cancel()
-		require.ErrorIs(t, err, context.DeadlineExceeded)
+			subscriptions,
+			endLSN,
+		)
+		require.NoError(t, err)
 		targetAssert.HasTableCount("metrics", 10)
 	}
 }

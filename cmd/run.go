@@ -19,7 +19,7 @@ var run = &cobra.Command{
 		sourceConn, _ := cmd.Flags().GetString("source")
 		targetConn, _ := cmd.Flags().GetString("target")
 
-		err := entry.Run(ctx, sourceConn, targetConn, publications, subscriptions)
+		err := entry.Run(ctx, sourceConn, targetConn, publications, subscriptions, entry.NeverEnd)
 		if err != nil {
 			panic(err)
 		}

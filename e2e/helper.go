@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
@@ -72,6 +73,13 @@ func prepareDBS(t *testing.T, ctx context.Context) TestDBS {
 	}
 
 	return dbs
+}
+
+func (d *TestDB) WalFlushLSN(t *testing.T, ctx context.Context) pglogrepl.LSN {
+	var lsn pglogrepl.LSN
+	err := d.QueryRow(t, ctx, `SELECT pg_current_wal_flush_lsn()`).Scan(&lsn)
+	require.NoError(t, err)
+	return lsn
 }
 
 func (d *TestDB) QueryRow(t *testing.T, ctx context.Context, query string, params ...interface{}) pgx.Row {

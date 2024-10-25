@@ -21,9 +21,6 @@ type applyContext struct {
 	tx             pgx.Tx
 	batch          pgx.Batch
 	lastCommitTime time.Time
-	commitLSN      pglogrepl.LSN
-	commitTime     time.Time
-	txnInProgress  bool
 	timer          *time.Timer
 	batchDuration  time.Duration
 	relations      map[uint32]*pglogrepl.RelationMessage
@@ -63,15 +60,20 @@ func (a *applyContext) begin(finalLSN pglogrepl.LSN) {
 	if !a.reachedStartPos {
 		zap.L().Info("Skipping", zap.String("lastCommitLSN", a.lastCommitLSN.String()),
 			zap.String("finalLSN", finalLSN.String()))
+		return
 	}
-	a.txnInProgress = true
+	a.batch.Queue("BEGIN")
 	a.timer.Stop()
 }
 
 func (a *applyContext) commit(ctx context.Context, commitLSN pglogrepl.LSN, commitTime time.Time) {
-	a.commitLSN = commitLSN
-	a.commitTime = commitTime
-	a.txnInProgress = false
+	if !a.reachedStartPos {
+		return
+	}
+
+	q := `select pg_replication_origin_xact_setup($1, $2)`
+	a.batch.Queue(q, commitLSN, commitTime)
+	a.batch.Queue("COMMIT")
 	if time.Since(a.lastCommitTime) > a.batchDuration {
 		a.flush(ctx)
 	} else {
@@ -81,8 +83,6 @@ func (a *applyContext) commit(ctx context.Context, commitLSN pglogrepl.LSN, comm
 
 func (a *applyContext) flush(ctx context.Context) error {
 	if a.batch.Len() > 0 {
-		q := `select pg_replication_origin_xact_setup($1, $2)`
-		a.batch.Queue(q, a.commitLSN, a.commitTime)
 		before := time.Now()
 
 		err := a.conn.SendBatch(ctx, &a.batch).Close()
@@ -181,7 +181,7 @@ func (a *applyContext) decodeTextColumnData(data []byte, dataType uint32) (inter
 }
 
 func receive(ctx context.Context, source *conn.ReceiveConn,
-	start pglogrepl.LSN,
+	start, end pglogrepl.LSN,
 	walDataCh chan<- []byte,
 	applyLSNCh <-chan pglogrepl.LSN) error {
 
@@ -237,7 +237,18 @@ func receive(ctx context.Context, source *conn.ReceiveConn,
 		case pglogrepl.PrimaryKeepaliveMessageByteID:
 			pkm, err := pglogrepl.ParsePrimaryKeepaliveMessage(msg.Data[1:])
 			if err != nil {
-				return fmt.Errorf("ParsePrimaryKeepaliveMessage failed: %w", err)
+				return fmt.Errorf("Error on Parse PrimaryKeepaliveMessage failed: %w", err)
+			}
+
+			if pkm.ReplyRequested {
+				nextStandbyMessageDeadline = time.Time{}
+			}
+			// TODO: Inform keep alive to the apply go routine.
+			if pkm.ServerWALEnd > end {
+				zap.L().Info("Keepalive reached end",
+					zap.String("end", pkm.ServerWALEnd.String()),
+					zap.String("endpos", end.String()))
+				return nil
 			}
 
 			zap.L().Debug("Primary Keepalive Message",
@@ -245,15 +256,18 @@ func receive(ctx context.Context, source *conn.ReceiveConn,
 				zap.String("ServerTime", pkm.ServerTime.String()),
 				zap.Bool("ReplyRequested", pkm.ReplyRequested))
 
-			if pkm.ReplyRequested {
-				nextStandbyMessageDeadline = time.Time{}
-			}
-			// TODO: Inform keep alive to the apply go routine.
-
 		case pglogrepl.XLogDataByteID:
 			xld, err := pglogrepl.ParseXLogData(msg.Data[1:])
 			if err != nil {
 				return fmt.Errorf("ParseXLogData failed: %w", err)
+			}
+
+			if xld.WALStart > end {
+				zap.L().Info("XLogData reached end",
+					zap.String("pos", xld.WALStart.String()),
+					zap.String("end", xld.ServerWALEnd.String()),
+					zap.String("endpos", end.String()))
+				return nil
 			}
 
 			zap.L().Debug("XLogData", zap.String("WALStart", xld.WALStart.String()),
@@ -268,33 +282,7 @@ func receive(ctx context.Context, source *conn.ReceiveConn,
 	}
 }
 
-func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.ApplyConn, start pglogrepl.LSN) error {
-	zap.L().Info("Starting apply", zap.String("lsn", start.String()))
-
-	// To buffer wal data from receive to apply
-	walDataCh := make(chan []byte, 1024)
-	// Last flushed applyLSN from replication origin progress.
-	// This will be sent from apply to receive to send feedback.
-	applyLSNCh := make(chan pglogrepl.LSN)
-
-	g, ctx := errgroup.WithContext(ctx)
-
-	g.Go(func() error {
-		// Receive is the only writer into the walDataCh
-		defer close(walDataCh)
-		return receive(ctx, source, start, walDataCh, applyLSNCh)
-	})
-
-	g.Go(func() error {
-		// Apply is the only writer into the applyLSNCh
-		defer close(applyLSNCh)
-		return apply(ctx, target, start, walDataCh, applyLSNCh)
-	})
-
-	return g.Wait()
-}
-
-func apply(ctx context.Context, target *conn.ApplyConn, start pglogrepl.LSN, walDataCh <-chan []byte, applyLSNCh chan<- pglogrepl.LSN) error {
+func apply(ctx context.Context, target *conn.ApplyConn, start, end pglogrepl.LSN, walDataCh <-chan []byte, applyLSNCh chan<- pglogrepl.LSN) error {
 	var err error
 	a := newApplyCtx(target, start)
 	for {
@@ -312,6 +300,8 @@ func apply(ctx context.Context, target *conn.ApplyConn, start pglogrepl.LSN, wal
 			// Channel might close
 			if ok {
 				err = a.applyV1(ctx, walData)
+			} else {
+				return a.flush(ctx)
 			}
 		}
 
@@ -319,4 +309,32 @@ func apply(ctx context.Context, target *conn.ApplyConn, start pglogrepl.LSN, wal
 			return err
 		}
 	}
+}
+
+func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.ApplyConn, start, end pglogrepl.LSN) error {
+	zap.L().Info("Starting apply", zap.String("lsn", start.String()))
+
+	// To buffer wal data from receive to apply
+	walDataCh := make(chan []byte, 1024)
+	// Last flushed applyLSN from replication origin progress.
+	// This will be sent from apply to receive to send feedback.
+	applyLSNCh := make(chan pglogrepl.LSN)
+
+	g, ctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		// Receive is the only writer into the walDataCh
+		defer close(walDataCh)
+
+		return receive(ctx, source, start, end, walDataCh, applyLSNCh)
+	})
+
+	g.Go(func() error {
+		// Apply is the only writer into the applyLSNCh
+		defer close(applyLSNCh)
+
+		return apply(ctx, target, start, end, walDataCh, applyLSNCh)
+	})
+
+	return g.Wait()
 }

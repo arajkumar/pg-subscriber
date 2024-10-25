@@ -3,15 +3,19 @@ package entry
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/timescale/timescaledb-cdc/pkg/conn"
 	"github.com/timescale/timescaledb-cdc/pkg/publication"
 	"github.com/timescale/timescaledb-cdc/pkg/subscription"
 
+	"github.com/jackc/pglogrepl"
 	"go.uber.org/zap"
 )
 
-func Run(ctx context.Context, sourceConn, targetConn string, publications, subscriptions []string) error {
+var NeverEnd pglogrepl.LSN = pglogrepl.LSN(math.MaxUint64)
+
+func Run(ctx context.Context, sourceConn, targetConn string, publications, subscriptions []string, endLSN pglogrepl.LSN) error {
 	zap.L().Info("Starting..")
 	source, err := conn.Parse(sourceConn)
 	if err != nil {
@@ -33,7 +37,7 @@ func Run(ctx context.Context, sourceConn, targetConn string, publications, subsc
 		return fmt.Errorf("Error creating subcription: %w", err)
 	}
 
-	err = sub.Sync(ctx)
+	err = sub.Sync(ctx, endLSN)
 	if err != nil {
 		return fmt.Errorf("Error on sync: %w", err)
 	}

@@ -230,8 +230,8 @@ func (s *Subscriber) startReplication(ctx context.Context, sourceConn *conn.Rece
 	return nil
 }
 
-func (s *Subscriber) Sync(ctx context.Context) error {
-	zap.L().Info("Starting subscriber", zap.String("name", s.name))
+func (s *Subscriber) Sync(ctx context.Context, endLSN pglogrepl.LSN) error {
+	zap.L().Debug("Starting subscriber", zap.String("name", s.name))
 	// Refresh the subscription
 	err := s.refresh(ctx)
 	if err != nil {
@@ -263,6 +263,5 @@ func (s *Subscriber) Sync(ctx context.Context) error {
 	}
 
 	// Start the apply worker
-	err = StartApply(ctx, sourceConn, applyConn, start)
-	return err
+	return StartApply(ctx, sourceConn, applyConn, start, endLSN)
 }
