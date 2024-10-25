@@ -205,7 +205,7 @@ func receive(ctx context.Context, source *conn.ReceiveConn,
 			if err != nil {
 				return fmt.Errorf("Error during send status update: %w", err)
 			}
-			zap.L().Debug("Standby update", zap.String("pos", applyLSN.String()))
+			zap.L().Info("Standby update", zap.String("pos", applyLSN.String()))
 			nextStandbyMessageDeadline = time.Now().Add(standbyMessageTimeout)
 		}
 
@@ -300,12 +300,12 @@ func apply(ctx context.Context, target *conn.ApplyConn, start pglogrepl.LSN, wal
 			err = a.flush(ctx)
 		case <-ctx.Done():
 			err = a.flush(ctx)
+		case applyLSNCh <- a.lastCommitLSN:
+			//
 		case walData, ok := <-walDataCh:
 			if ok {
 				err = a.applyV1(ctx, walData)
 			}
-		default:
-			continue
 		}
 
 		if err != nil {
