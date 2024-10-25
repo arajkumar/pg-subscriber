@@ -181,15 +181,16 @@ func (a *applyContext) decodeTextColumnData(data []byte, dataType uint32) (inter
 }
 
 func receive(ctx context.Context, source *conn.ReceiveConn,
+	start pglogrepl.LSN,
 	walDataCh chan<- []byte,
 	applyLSNCh <-chan pglogrepl.LSN) error {
 
 	standbyMessageTimeout := time.Second * 10
 	nextStandbyMessageDeadline := time.Now().Add(standbyMessageTimeout)
 
-	for {
-		var applyLSN pglogrepl.LSN
+	applyLSN := start
 
+	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -281,7 +282,7 @@ func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.Appl
 	g.Go(func() error {
 		// Receive is the only writer into the walDataCh
 		defer close(walDataCh)
-		return receive(ctx, source, walDataCh, applyLSNCh)
+		return receive(ctx, source, start, walDataCh, applyLSNCh)
 	})
 
 	g.Go(func() error {
