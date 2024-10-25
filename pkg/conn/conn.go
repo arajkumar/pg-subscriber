@@ -77,7 +77,7 @@ func (s *Source) ReceiveConn(ctx context.Context) (*ReceiveConn, error) {
 type ApplyConn struct {
 	*Target
 	*pgx.Conn
-	origin string
+	Origin string
 }
 
 // Target connection with replication session and origin
@@ -129,7 +129,7 @@ func (t *Target) ApplyConn(ctx context.Context, origin string) (*ApplyConn, erro
 	return &ApplyConn{
 		Target: t,
 		Conn:   conn,
-		origin: origin,
+		Origin: origin,
 	}, nil
 }
 
@@ -144,7 +144,7 @@ func (t *ApplyConn) OriginProgress(ctx context.Context, flush bool) (lsn pglogre
 	// a non nil pointer.
 	var lsnP *pglogrepl.LSN
 	q := `SELECT pg_replication_origin_progress($1, $2)`
-	err = conn.QueryRow(ctx, q, t.origin, flush).Scan(&lsnP)
+	err = conn.QueryRow(ctx, q, t.Origin, flush).Scan(&lsnP)
 	if err != nil {
 		return lsn, fmt.Errorf("Error on replication origin progress: %w", err)
 	}

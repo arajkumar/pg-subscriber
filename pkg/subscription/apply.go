@@ -3,7 +3,7 @@ package subscription
 import (
 	"context"
 	"fmt"
-	"sync"
+	"golang.org/x/sync/errgroup"
 	"time"
 
 	"github.com/jackc/pglogrepl"
@@ -28,10 +28,6 @@ type applyContext struct {
 	batchDuration  time.Duration
 	relations      map[uint32]*pglogrepl.RelationMessage
 	typeMap        *pgtype.Map
-	walDataCh      chan []byte
-	errCh          chan error
-	applyLSNCh     chan pglogrepl.LSN
-	g              sync.WaitGroup
 	// This would help us to skip txn which are already applied during
 	// restart. It would be initialized based on the replication origin
 	// progress and updated on each successful commit.
@@ -40,9 +36,6 @@ type applyContext struct {
 }
 
 func newApplyCtx(conn *conn.ApplyConn, lastCommitLSN pglogrepl.LSN) *applyContext {
-	walDataCh := make(chan []byte, 1024)
-	errCh := make(chan error)
-	applyLSNCh := make(chan pglogrepl.LSN)
 	relations := make(map[uint32]*pglogrepl.RelationMessage)
 	// TODO: Does it make sense to expose as a setting?
 	batchDuration := 2 * time.Second
@@ -54,22 +47,9 @@ func newApplyCtx(conn *conn.ApplyConn, lastCommitLSN pglogrepl.LSN) *applyContex
 		batchDuration:   batchDuration,
 		relations:       relations,
 		typeMap:         pgtype.NewMap(),
-		walDataCh:       walDataCh,
-		errCh:           errCh,
-		applyLSNCh:      applyLSNCh,
-		g:               sync.WaitGroup{},
 		lastCommitLSN:   lastCommitLSN,
 		reachedStartPos: false,
 	}
-}
-
-func (a *applyContext) close() {
-	// Wait for apply go routine to complete.
-	a.g.Wait()
-	// Close all channels
-	close(a.errCh)
-	close(a.walDataCh)
-	close(a.applyLSNCh)
 }
 
 func (a *applyContext) queue(q string, args ...interface{}) {
@@ -88,12 +68,12 @@ func (a *applyContext) begin(finalLSN pglogrepl.LSN) {
 	a.timer.Stop()
 }
 
-func (a *applyContext) commit(commitLSN pglogrepl.LSN, commitTime time.Time) {
+func (a *applyContext) commit(ctx context.Context, commitLSN pglogrepl.LSN, commitTime time.Time) {
 	a.commitLSN = commitLSN
 	a.commitTime = commitTime
 	a.txnInProgress = false
 	if time.Since(a.lastCommitTime) > a.batchDuration {
-		a.flush(context.Background())
+		a.flush(ctx)
 	} else {
 		a.timer.Reset(a.batchDuration)
 	}
@@ -114,13 +94,10 @@ func (a *applyContext) flush(ctx context.Context) error {
 			zap.Int("buflen", a.batch.Len()))
 
 		applyLSN, err := a.conn.OriginProgress(ctx, true)
-		if err != nil {
-			select {
-			case a.applyLSNCh <- applyLSN:
-				//
-			default:
-				//
-			}
+		if err == nil {
+			a.lastCommitLSN = applyLSN
+		} else {
+			zap.L().Warn("Origin progress failure", zap.Error(err))
 		}
 		a.batch = pgx.Batch{}
 		a.lastCommitTime = time.Now()
@@ -129,52 +106,7 @@ func (a *applyContext) flush(ctx context.Context) error {
 	return nil
 }
 
-func (a *applyContext) spawnApplier(ctx context.Context) {
-	a.g.Add(1)
-	go func() {
-		defer a.g.Done()
-
-		var err error
-		var quit bool
-
-		for {
-			select {
-			case <-a.timer.C:
-				err = a.flush(ctx)
-			case <-ctx.Done():
-				err, quit = a.flush(ctx), true
-			case walData := <-a.walDataCh:
-				err = a.applyV1(walData)
-			default:
-				continue
-			}
-
-			if quit {
-				return
-			}
-
-			if err != nil {
-				a.errCh <- err
-				return
-			}
-		}
-	}()
-}
-
-func (a *applyContext) processV1(walData []byte) error {
-	// TODO: Use buffer pool to avoid repeated allocation
-	walDataCp := make([]byte, len(walData))
-	copy(walDataCp, walData)
-	select {
-	case a.walDataCh <- walDataCp:
-		// pass
-	case err := <-a.errCh:
-		return err
-	}
-	return nil
-}
-
-func (a *applyContext) applyV1(walData []byte) error {
+func (a *applyContext) applyV1(ctx context.Context, walData []byte) error {
 	logicalMsg, err := pglogrepl.Parse(walData)
 	if err != nil {
 		return fmt.Errorf("Error on v1 parse: %w", err)
@@ -189,7 +121,7 @@ func (a *applyContext) applyV1(walData []byte) error {
 		a.begin(logicalMsg.FinalLSN)
 
 	case *pglogrepl.CommitMessage:
-		a.commit(logicalMsg.CommitLSN, logicalMsg.CommitTime)
+		a.commit(ctx, logicalMsg.CommitLSN, logicalMsg.CommitTime)
 
 	case *pglogrepl.InsertMessage:
 		rel, ok := a.relations[logicalMsg.RelationID]
@@ -248,34 +180,27 @@ func (a *applyContext) decodeTextColumnData(data []byte, dataType uint32) (inter
 	return string(data), nil
 }
 
-func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.ApplyConn, start pglogrepl.LSN) error {
-	zap.L().Info("Starting apply", zap.String("lsn", start.String()))
+func receive(ctx context.Context, source *conn.ReceiveConn,
+	walDataCh chan<- []byte,
+	applyLSNCh <-chan pglogrepl.LSN) error {
 
 	standbyMessageTimeout := time.Second * 10
 	nextStandbyMessageDeadline := time.Now().Add(standbyMessageTimeout)
 
-	applyCtx := newApplyCtx(target, start)
-
-	// Start go routine which processes replication messages in parallel to
-	// the following receive loop.
-	applyCtx.spawnApplier(ctx)
-
-	defer applyCtx.close()
-
-	applyLSN := start
-
 	for {
-		// This breaks the loop upon cancellation
+		var applyLSN pglogrepl.LSN
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case applyLSN = <-applyCtx.applyLSNCh:
+		case applyLSN = <-applyLSNCh:
 			//
 		default:
 		}
 
 		if time.Now().After(nextStandbyMessageDeadline) {
-			// TODO: Send write, flush, apply LSN
+			// It is good enough to send WALWritePosition, rest will be assigned based
+			// on it.
 			err := pglogrepl.SendStandbyStatusUpdate(ctx, source.PgConn, pglogrepl.StandbyStatusUpdate{WALWritePosition: applyLSN})
 			if err != nil {
 				return fmt.Errorf("Error during send status update: %w", err)
@@ -285,7 +210,7 @@ func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.Appl
 		}
 
 		ctx, cancel := context.WithDeadline(ctx, nextStandbyMessageDeadline)
-		rawMsg, err := source.PgConn.ReceiveMessage(ctx)
+		rawMsg, err := source.ReceiveMessage(ctx)
 		cancel()
 		if err != nil {
 			if pgconn.Timeout(err) {
@@ -296,6 +221,7 @@ func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.Appl
 
 		if errMsg, ok := rawMsg.(*pgproto3.ErrorResponse); ok {
 			zap.L().Error("Postgres WAL error", zap.Reflect("type", errMsg))
+			continue
 		}
 
 		msg, ok := rawMsg.(*pgproto3.CopyData)
@@ -319,6 +245,7 @@ func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.Appl
 			if pkm.ReplyRequested {
 				nextStandbyMessageDeadline = time.Time{}
 			}
+			// TODO: Inform keep alive to the apply go routine.
 
 		case pglogrepl.XLogDataByteID:
 			xld, err := pglogrepl.ParseXLogData(msg.Data[1:])
@@ -330,10 +257,59 @@ func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.Appl
 				zap.String("ServerWALEnd", xld.ServerWALEnd.String()),
 				zap.String("ServerTime", xld.ServerTime.String()))
 
-			err = applyCtx.processV1(xld.WALData)
-			if err != nil {
-				return fmt.Errorf("Error on apply: %w", err)
+			// TODO: Use buffer pool to avoid repeated allocation
+			walDataCp := make([]byte, len(xld.WALData))
+			copy(walDataCp, xld.WALData)
+			walDataCh <- walDataCp
+		}
+	}
+}
+
+func StartApply(ctx context.Context, source *conn.ReceiveConn, target *conn.ApplyConn, start pglogrepl.LSN) error {
+	zap.L().Info("Starting apply", zap.String("lsn", start.String()))
+
+	// To buffer wal data from receive to apply
+	walDataCh := make(chan []byte, 1024)
+	// Last flushed applyLSN from replication origin progress.
+	// This will be sent from apply to receive to send feedback.
+	applyLSNCh := make(chan pglogrepl.LSN)
+
+	g, ctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		// Receive is the only writer into the walDataCh
+		defer close(walDataCh)
+		return receive(ctx, source, walDataCh, applyLSNCh)
+	})
+
+	g.Go(func() error {
+		// Apply is the only writer into the applyLSNCh
+		defer close(applyLSNCh)
+		return apply(ctx, target, start, walDataCh, applyLSNCh)
+	})
+
+	return g.Wait()
+}
+
+func apply(ctx context.Context, target *conn.ApplyConn, start pglogrepl.LSN, walDataCh <-chan []byte, applyLSNCh chan<- pglogrepl.LSN) error {
+	var err error
+	a := newApplyCtx(target, start)
+	for {
+		select {
+		case <-a.timer.C:
+			err = a.flush(ctx)
+		case <-ctx.Done():
+			err = a.flush(ctx)
+		case walData, ok := <-walDataCh:
+			if ok {
+				err = a.applyV1(ctx, walData)
 			}
+		default:
+			continue
+		}
+
+		if err != nil {
+			return err
 		}
 	}
 }
