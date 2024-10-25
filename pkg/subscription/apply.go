@@ -193,8 +193,10 @@ func receive(ctx context.Context, source *conn.ReceiveConn,
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case applyLSN = <-applyLSNCh:
-			//
+		case apply, ok := <-applyLSNCh:
+			if ok {
+				applyLSN = apply
+			}
 		default:
 		}
 
@@ -300,9 +302,13 @@ func apply(ctx context.Context, target *conn.ApplyConn, start pglogrepl.LSN, wal
 			err = a.flush(ctx)
 		case <-ctx.Done():
 			err = a.flush(ctx)
+			if err == nil {
+				return ctx.Err()
+			}
 		case applyLSNCh <- a.lastCommitLSN:
-			//
+			// Update applyLSN
 		case walData, ok := <-walDataCh:
+			// Channel might close
 			if ok {
 				err = a.applyV1(ctx, walData)
 			}
